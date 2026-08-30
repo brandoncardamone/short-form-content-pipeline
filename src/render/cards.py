@@ -64,6 +64,8 @@ class CardRenderer:
         self.outdir = Path(outdir)
         self.outdir.mkdir(parents=True, exist_ok=True)
         self.max_h = self._css_var("--card-max-content-h")
+        # Populated by render_script; each entry is the first msg index of a card.
+        self.card_boundaries: list[dict] = []
 
     def _css_var(self, name):
         for line in self.css.splitlines():
@@ -98,6 +100,7 @@ class CardRenderer:
         prepared = _prepare(messages)
         frames = []
         idx = 0
+        self.card_boundaries = [{"msg_index": 0, "show_header": True}]
 
         with sync_playwright() as p:
             browser = p.chromium.launch()
@@ -120,6 +123,7 @@ class CardRenderer:
                 if h_after > self.max_h and i > card_start:
                     card_start = i
                     show_header = False
+                    self.card_boundaries.append({"msg_index": i, "show_header": False})
                     visible = [dict(prepared[i])]
                     h_after = self._natural_h(page, visible, show_header)
 

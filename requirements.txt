@@ -1,0 +1,20 @@
+# Core — already installed via pip at setup
+playwright
+jinja2
+pillow
+python-dotenv
+pydantic
+pyyaml
+
+# Audio
+soundfile
+
+# TTS — try kokoro first; if torch has no Python 3.14 wheel, install piper-tts instead
+# kokoro
+# piper-tts
+
+# LLM
+google-generativeai
+
+# HTTP (publishing)
+requests

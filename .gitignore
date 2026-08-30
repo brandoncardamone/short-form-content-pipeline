@@ -2,3 +2,9 @@
 output/
 data/
 assets/backgrounds/
+assets/voices/
+src/out/
+logs/
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -1,0 +1,39 @@
+video:
+  width: 1080
+  height: 1920
+  fps: 30
+  target_duration_min: 60   # seconds
+  target_duration_max: 90
+
+tts:
+  engine: piper              # kokoro | piper (kokoro fails on Python 3.14 due to blis/spacy)
+  speed: 1.2                 # atempo multiplier applied via ffmpeg
+  gap_ms: 220                # silence inserted after each beat
+  voices:
+    a: af_bella              # protagonist (right, blue)
+    b: am_adam               # other party (left, gray)
+
+llm:
+  provider: gemini
+  model: gemini-2.0-flash-exp
+
+card:
+  contact_name: "Maddy ❤️"
+  avatar: null               # path to image, or null for gray circle
+
+output:
+  work_dir: output/work
+  ready_dir: output/ready
+  db_path: data/state.db
+
+music:
+  enabled: false
+  volume_db: -28             # relative to voice loudnorm target
+
+backgrounds:
+  normalized_dir: assets/backgrounds/normalized
+  clips: []
+  # clips:
+  #   - name: parkour
+  #     path: assets/backgrounds/parkour.mp4
+  #     crop_x: null         # null = center crop; integer = left edge of 1080px crop window
