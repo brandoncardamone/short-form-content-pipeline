@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>{{ css }}</style>
+</head>
+<body>
+<div class="card" id="card">
+
+  {% if show_header %}
+  <div class="header">
+    <div class="back">
+      <svg width="22" height="38" viewBox="0 0 22 38" fill="none">
+        <path d="M20 2L3 19L20 36" stroke="{{ ios_blue }}" stroke-width="4"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+    <div class="contact">
+      {% if avatar %}
+      <img class="avatar" src="{{ avatar }}">
+      {% else %}
+      <div class="avatar"></div>
+      {% endif %}
+      <div class="name">
+        {{ contact_name }}
+        <svg width="10" height="17" viewBox="0 0 10 17" fill="none">
+          <path d="M1.5 1.5L8 8.5L1.5 15.5" stroke="#8E8E93" stroke-width="2.2"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+    </div>
+    <div class="facetime">
+      <svg width="42" height="27" viewBox="0 0 42 27" fill="none">
+        <rect x="1.5" y="1.5" width="26" height="24" rx="6.5"
+              stroke="{{ ios_blue }}" stroke-width="3"/>
+        <path d="M31 10.5L40 5V22L31 16.5V10.5Z" fill="{{ ios_blue }}"/>
+      </svg>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="messages" id="messages"
+       {% if content_h is not none %}style="height: {{ content_h }}px;"{% endif %}>
+    {% for m in messages %}
+    <div class="row {{ m.speaker }}{% if m.tail %} tail{% endif %}{% if m.new_speaker %} new-speaker{% endif %}{% if m.incoming %} incoming{% endif %}"
+         {% if m.incoming %}id="incoming"{% endif %}>
+      <div class="bubble"
+           {% if m.incoming %}style="transform: scale({{ scale }}) translateY({{ shift }}px);"{% endif %}>
+        {{ m.text }}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,175 @@
+/* ============================================================
+   iMessage-style chat card.
+   All visual tuning happens here. No Python changes needed to
+   restyle — adjust these variables and re-render.
+   ============================================================ */
+
+:root {
+  --frame-w: 1080px;
+  --frame-h: 1920px;
+
+  /* Card geometry. Card width is ~65% of frame in the reference. */
+  --card-w: 702px;
+  --card-radius: 30px;
+  --card-center-y: 48%;          /* vertical center of the card */
+  --card-max-content-h: 880px;   /* triggers reset when exceeded */
+
+  /* iOS system colors */
+  --bubble-blue: #2C8CFF;
+  --bubble-gray: #E9E9EB;
+  --text-on-blue: #FFFFFF;
+  --text-on-gray: #000000;
+  --header-bg: #F7F7F7;
+  --header-border: #D8D8DC;
+  --ios-blue: #0A84FF;
+
+  --bubble-radius: 34px;
+  --bubble-pad-v: 17px;
+  --bubble-pad-h: 26px;
+  --bubble-gap: 8px;         /* between bubbles in same run */
+  --bubble-gap-speaker: 18px; /* between different speakers */
+  --bubble-font-size: 33px;
+  --bubble-max-w: 76%;
+
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: var(--frame-w);
+  height: var(--frame-h);
+  overflow: hidden;
+  background: transparent;
+  font-family: -apple-system, "SF Pro Text", "Helvetica Neue",
+               "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Card is absolutely centered on --card-center-y regardless of height,
+   so it grows symmetrically rather than drifting down the frame. */
+.card {
+  position: absolute;
+  left: 50%;
+  top: var(--card-center-y);
+  transform: translate(-50%, -50%);
+  width: var(--card-w);
+  background: #FFFFFF;
+  border-radius: var(--card-radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;            /* <-- this is what clips the incoming bubble */
+}
+
+/* ---------- Header (first card only; resets omit it) ---------- */
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px 14px;
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--header-border);
+}
+
+.header .back { width: 40px; flex-shrink: 0; }
+.header .facetime { width: 40px; flex-shrink: 0; text-align: right; }
+.header svg { display: block; }
+
+.header .contact {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+}
+
+.header .avatar {
+  width: 74px;
+  height: 74px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #C8C8CC;
+}
+
+.header .name {
+  font-size: 23px;
+  color: #000;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+/* ---------- Message area ---------- */
+
+.messages {
+  position: relative;
+  padding: 22px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.row { display: flex; width: 100%; }
+.row.a { justify-content: flex-end; }   /* protagonist, right, blue */
+.row.b { justify-content: flex-start; } /* other party, left, gray  */
+
+.row + .row { margin-top: var(--bubble-gap); }
+.row.new-speaker { margin-top: var(--bubble-gap-speaker); }
+
+.bubble {
+  position: relative;
+  max-width: var(--bubble-max-w);
+  padding: var(--bubble-pad-v) var(--bubble-pad-h);
+  border-radius: var(--bubble-radius);
+  font-size: var(--bubble-font-size);
+  line-height: 1.28;
+  word-wrap: break-word;
+}
+
+.row.a .bubble { background: var(--bubble-blue); color: var(--text-on-blue); }
+.row.b .bubble { background: var(--bubble-gray); color: var(--text-on-gray); }
+
+/* Tails render only on the last bubble of a consecutive same-speaker run.
+   Two pseudo-elements: ::before is a colored wedge extending past the bubble
+   edge, ::after punches it back to the card background. This is the standard
+   iMessage tail construction. */
+.row.tail .bubble::before,
+.row.tail .bubble::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  height: 30px;
+  width: 24px;
+}
+
+.row.a.tail .bubble::before {
+  right: -9px;
+  background: var(--bubble-blue);
+  border-bottom-left-radius: 20px 18px;
+}
+.row.a.tail .bubble::after {
+  right: -24px;
+  background: #FFFFFF;
+  border-bottom-left-radius: 14px;
+}
+
+.row.b.tail .bubble::before {
+  left: -9px;
+  background: var(--bubble-gray);
+  border-bottom-right-radius: 20px 18px;
+}
+.row.b.tail .bubble::after {
+  left: -24px;
+  background: #FFFFFF;
+  border-bottom-right-radius: 14px;
+}
+
+/* ---------- Entry animation ----------
+   The incoming bubble is scaled and translated by inline transform
+   written per-frame by the renderer. transform-origin is set to the
+   bubble's own corner so it grows out of its anchor point.        */
+
+.row.incoming .bubble { transform-origin: bottom center; }
+.row.a.incoming .bubble { transform-origin: bottom right; }
+.row.b.incoming .bubble { transform-origin: bottom left; }
