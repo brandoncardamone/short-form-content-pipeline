@@ -1,0 +1,134 @@
+/* ============================================================
+   Reddit-post-style card (dark mode). One full-block card per
+   beat, no growth animation — cards fully replace one another.
+   ============================================================ */
+
+:root {
+  --frame-w: 1080px;
+  --frame-h: 1920px;
+
+  --card-w: 92%;
+  --card-top: 58%;              /* lower-middle third, matches reference videos */
+  --card-radius: 22px;
+  --card-bg: rgba(20, 20, 22, 0.92);
+  --card-pad: 34px;
+
+  --text-main: #F2F2F3;
+  --text-muted: #9BA0A6;
+  --text-title: #FFFFFF;
+  --accent-orange: #FF4500;     /* Reddit brand accent, used sparingly */
+  --nsfw-pink: #FF6B9D;
+
+  --font-size-title: 40px;
+  --font-size-body: 34px;
+  --font-size-meta: 26px;
+
+  --shadow: 0 20px 55px rgba(0, 0, 0, 0.45);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: var(--frame-w);
+  height: var(--frame-h);
+  overflow: hidden;
+  background: transparent;
+  font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.card {
+  position: absolute;
+  left: 50%;
+  top: var(--card-top);
+  transform: translate(-50%, -50%);
+  width: var(--card-w);
+  background: var(--card-bg);
+  border-radius: var(--card-radius);
+  box-shadow: var(--shadow);
+  padding: var(--card-pad);
+  text-align: left;
+}
+
+.header-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 26px;
+  font-weight: 600;
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.meta .primary {
+  font-size: var(--font-size-meta);
+  color: var(--text-main);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.meta .primary .sep { color: var(--text-muted); font-weight: 400; margin: 0 6px; }
+.meta .primary .username { color: var(--text-muted); font-weight: 400; }
+
+.meta .secondary {
+  font-size: 22px;
+  color: var(--text-muted);
+}
+
+.awards {
+  font-size: 24px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.nsfw-tag {
+  display: inline-block;
+  background: rgba(255, 107, 157, 0.15);
+  color: var(--nsfw-pink);
+  border: 1px solid var(--nsfw-pink);
+  border-radius: 6px;
+  padding: 2px 10px;
+  font-size: 22px;
+  font-weight: 600;
+  margin-left: 8px;
+}
+
+.title {
+  font-size: var(--font-size-title);
+  font-weight: 700;
+  color: var(--text-title);
+  line-height: 1.28;
+  margin-bottom: 20px;
+}
+
+.body {
+  font-size: var(--font-size-body);
+  color: var(--text-main);
+  line-height: 1.42;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.continuation .body {
+  margin-top: 0;
+}

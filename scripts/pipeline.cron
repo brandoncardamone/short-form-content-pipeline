@@ -1,0 +1,9 @@
+# Replaces the two Windows Task Scheduler jobs (SFCP-Pipeline, SFCP-AutoPublish)
+# now that the pipeline runs on an always-on Linux VM instead of a WSL distro
+# that only runs while the host PC is on. Install with:
+#   crontab scripts/pipeline.cron
+# (edit the path below first if your checkout isn't at ~/short-form-content-pipeline)
+# Verify installed with: crontab -l
+
+*/15 * * * * cd $HOME/short-form-content-pipeline && .venv/bin/python -m src.cli run-all >> logs/run-all.log 2>&1
+*/15 * * * * cd $HOME/short-form-content-pipeline && .venv/bin/python -m src.cli auto-publish >> logs/auto-publish.log 2>&1

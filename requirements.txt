@@ -12,9 +12,16 @@ soundfile
 # TTS — try kokoro first; if torch has no Python 3.14 wheel, install piper-tts instead
 # kokoro
 # piper-tts
+chatterbox-tts
+# chatterbox-tts's `perth` dependency imports pkg_resources, which setuptools>=81
+# removed entirely; pin below that until perth is updated.
+setuptools<81
 
 # LLM
 google-generativeai
+
+# Reddit story sourcing (real posts via Reddit's official read-only API)
+praw
 
 # HTTP (publishing)
 requests

@@ -21,8 +21,8 @@ FRAME_W, FRAME_H = 1080, 1920
 IOS_BLUE = "#0A84FF"
 
 # Animation: frames rendered per message entry, and the total entry duration.
-ENTRY_FRAMES = 6
-ENTRY_MS = 190
+ENTRY_FRAMES = 4
+ENTRY_MS = 90
 OVERSHOOT = 1.055   # peak scale before settling to 1.0
 
 
@@ -150,7 +150,7 @@ class CardRenderer:
                         scale=round(scale, 4), shift=round(shift, 2),
                     ))
                     out = self.outdir / f"f{idx:05d}.png"
-                    page.locator("#card").screenshot(path=str(out), omit_background=True)
+                    page.screenshot(path=str(out), omit_background=True)
                     frames.append(Frame(out, ENTRY_MS / ENTRY_FRAMES))
                     idx += 1
 
@@ -158,7 +158,7 @@ class CardRenderer:
                 visible[-1]["incoming"] = False
                 page.set_content(self._html(visible, show_header, content_h=h_after))
                 out = self.outdir / f"f{idx:05d}.png"
-                page.locator("#card").screenshot(path=str(out), omit_background=True)
+                page.screenshot(path=str(out), omit_background=True)
                 hold = max(beat_durations_ms[i] - ENTRY_MS, 60.0)
                 frames.append(Frame(out, hold))
                 idx += 1

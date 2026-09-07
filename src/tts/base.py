@@ -27,5 +27,11 @@ def load_engine(engine_name: str) -> "TTSEngine":
     elif engine_name == "piper":
         from src.tts.piper import PiperEngine
         return PiperEngine()
+    elif engine_name == "elevenlabs":
+        from src.tts.elevenlabs import ElevenLabsEngine
+        return ElevenLabsEngine()
+    elif engine_name == "chatterbox":
+        from src.tts.chatterbox import ChatterboxEngine
+        return ChatterboxEngine()
     else:
-        raise ValueError(f"Unknown TTS engine: {engine_name!r}. Choose 'kokoro' or 'piper'.")
+        raise ValueError(f"Unknown TTS engine: {engine_name!r}. Choose 'kokoro', 'piper', 'elevenlabs', or 'chatterbox'.")

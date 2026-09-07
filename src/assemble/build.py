@@ -10,6 +10,7 @@ After building, asserts the output has the correct duration and both streams.
 
 import json
 import logging
+import random
 import subprocess
 import wave
 from pathlib import Path
@@ -17,7 +18,6 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 FRAME_W, FRAME_H = 1080, 1920
-CARD_CENTER_Y = 0.48
 LOUDNORM = "loudnorm=I=-16:TP=-1.5:LRA=11"
 
 
@@ -32,8 +32,11 @@ def _build_audio(
     """
     from src.schema import RenderedBeat
 
+    with wave.open(str(rendered_beats[0].wav_path)) as wf:
+        voice_sample_rate = wf.getframerate()
+
     silence_path = work_dir / "silence.wav"
-    _write_silence(silence_path, cfg.tts.gap_ms, sample_rate=22050)
+    _write_silence(silence_path, cfg.tts.gap_ms, sample_rate=voice_sample_rate)
 
     concat_list = work_dir / "audio_concat.txt"
     lines = []
@@ -117,6 +120,8 @@ def build(
 
     voice_path = _build_audio(rendered_beats, work_dir, cfg)
     concat_path = _build_concat(frames_dir, manifest)
+    bg_start = _background_start_offset(background, total_s)
+    logger.info("Background clip: %s, starting at %.1fs", background.name, bg_start)
 
     # Verify audio duration matches expected video duration
     audio_dur = _wav_duration(voice_path)
@@ -127,12 +132,13 @@ def build(
             audio_dur, total_s, drift,
         )
 
-    # Filter graph: background loop → bg; card frames → card; overlay
+    # Card frames are full 1080x1920 screenshots (card position is baked in
+    # via CSS), so the overlay is a plain full-frame composite.
     filt = (
         f"[0:v]scale={FRAME_W}:{FRAME_H}:force_original_aspect_ratio=increase,"
         f"crop={FRAME_W}:{FRAME_H},fps={cfg.video.fps}[bg];"
         f"[1:v]format=rgba[card];"
-        f"[bg][card]overlay=x=(W-w)/2:y={CARD_CENTER_Y}*H-h/2:shortest=1[v]"
+        f"[bg][card]overlay=x=0:y=0:shortest=1[v]"
     )
 
     if cfg.music.enabled:
@@ -142,16 +148,17 @@ def build(
             music_path = music_clips[0]
             vol = 10 ** (cfg.music.volume_db / 20.0)
             filt += (
-                f";[2:a]aloop=loop=-1:size=2e+09,atrim=end={total_s:.3f},"
+                f";[3:a]aloop=loop=-1:size=2e+09,atrim=end={total_s:.3f},"
                 f"volume={vol:.4f}[music];"
-                f"[3:a][music]amix=inputs=2:duration=first[a]"
+                f"[2:a][music]amix=inputs=2:duration=first:normalize=0[a]"
             )
-            cmd = _build_cmd(background, concat_path, voice_path, out_path, total_s, filt, cfg, music=music_path)
+            cmd = _build_cmd(background, concat_path, voice_path, out_path, total_s, filt, cfg,
+                              music=music_path, bg_start=bg_start)
         else:
             logger.warning("music.enabled=true but no music files found in assets/music/")
-            cmd = _build_cmd(background, concat_path, voice_path, out_path, total_s, filt, cfg)
+            cmd = _build_cmd(background, concat_path, voice_path, out_path, total_s, filt, cfg, bg_start=bg_start)
     else:
-        cmd = _build_cmd(background, concat_path, voice_path, out_path, total_s, filt, cfg)
+        cmd = _build_cmd(background, concat_path, voice_path, out_path, total_s, filt, cfg, bg_start=bg_start)
 
     logger.info("Running ffmpeg assembly …")
     result = subprocess.run(cmd, capture_output=True)
@@ -160,6 +167,29 @@ def build(
 
     _verify_output(out_path, total_s)
     return out_path
+
+
+def _background_start_offset(background: Path, total_s: float, safety_margin_s: float = 60.0) -> float:
+    """Pick a random point within the background clip to start from, rather
+    than always playing from its beginning — but only far enough from the end
+    that the clip covers the whole video without needing to loop back to its
+    own start mid-video (which would show as a jarring jump). Falls back to
+    0 if the clip is too short for this video + the safety margin."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",
+             "default=noprint_wrappers=1:nokey=1", str(background)],
+            check=True, capture_output=True, text=True,
+        )
+        clip_duration = float(result.stdout.strip())
+    except (subprocess.CalledProcessError, ValueError) as e:
+        logger.warning("Could not probe background clip duration (%s) — starting from 0", e)
+        return 0.0
+
+    max_start = clip_duration - total_s - safety_margin_s
+    if max_start <= 0:
+        return 0.0
+    return random.uniform(0, max_start)
 
 
 def _build_cmd(
@@ -171,10 +201,11 @@ def _build_cmd(
     filt: str,
     cfg,
     music: Path | None = None,
+    bg_start: float = 0.0,
 ) -> list[str]:
     cmd = [
         "ffmpeg", "-y",
-        "-stream_loop", "-1", "-t", f"{total_s:.3f}", "-i", str(background),
+        "-ss", f"{bg_start:.3f}", "-stream_loop", "-1", "-t", f"{total_s:.3f}", "-i", str(background),
         "-f", "concat", "-safe", "0", "-i", str(concat_path),
         "-i", str(voice_path),
     ]

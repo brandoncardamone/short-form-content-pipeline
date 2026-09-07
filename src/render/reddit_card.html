@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>{{ css }}</style>
+</head>
+<body>
+<div class="card {% if not meta.is_first_of_unit %}continuation{% endif %}">
+
+  {% if meta.is_first_of_unit %}
+  <div class="header-row">
+    <div class="avatar" style="background: {{ avatar_color }};">{{ avatar_letter }}</div>
+    <div class="meta">
+      <div class="primary">
+        {% if meta.kind == "post" %}
+        r/{{ meta.subreddit }}<span class="sep">&middot;</span><span class="username">u/{{ meta.username }}</span>
+        {% else %}
+        <span class="username">u/{{ meta.username }}</span>
+        {% endif %}
+        {% if meta.is_nsfw %}<span class="nsfw-tag">NSFW</span>{% endif %}
+      </div>
+      <div class="secondary">
+        {{ meta.timestamp }}
+        {% if meta.awards > 0 %} &middot; 🏆 {{ meta.awards }}{% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if meta.title %}
+  <div class="title">{{ meta.title }}</div>
+  {% endif %}
+
+  {% if text %}
+  <div class="body">{{ text }}</div>
+  {% endif %}
+
+</div>
+</body>
+</html>

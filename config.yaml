@@ -6,16 +6,57 @@ video:
   target_duration_max: 90
 
 tts:
-  engine: piper              # kokoro | piper (kokoro fails on Python 3.14 due to blis/spacy)
-  speed: 1.2                 # atempo multiplier applied via ffmpeg
-  gap_ms: 220                # silence inserted after each beat
+  engine: chatterbox         # kokoro | piper | elevenlabs | chatterbox (kokoro fails on Python 3.14 due to blis/spacy)
+  speed: 1.35                # atempo multiplier applied via ffmpeg (was 1.5 — reddit narration read slightly too fast)
+  gap_ms: 90                 # silence inserted after each beat
   voices:
-    a: af_bella              # protagonist (right, blue)
-    b: am_adam               # other party (left, gray)
+    a: voice_a               # protagonist (right, blue) — cloned from assets/voices/chatterbox_ref_female.wav
+    b: voice_b                # other party (left, gray) — cloned from assets/voices/chatterbox_ref_male.wav
 
 llm:
   provider: gemini
-  model: gemini-2.0-flash-exp
+  model: gemini-3.6-flash   # gemini-2.5-flash no longer available to this account; gemini-flash-latest
+                             # resolves to gemini-3.7-flash, capped at 20 free-tier requests/day
+
+content:
+  format: random            # textchain | reddit_story | random (picks one per video, 2026-09-04)
+
+tiktok:
+  post_mode: inbox            # inbox (works today, no review — human pastes caption/hashtags
+                              # manually, confirmed structural limitation, not fixable) | direct
+                              # (needs TikTok app review — see project memory for submission status)
+
+schedule:
+  posts_per_day: 3            # tunable — start conservative, raise once quality/reach is verified
+  window_start_hour: 9        # local time, 24h clock
+  window_end_hour: 23
+  platform: instagram          # both | instagram | tiktok — set to instagram-only 2026-09-03
+                                # while TikTok's production review is pending; flip back to
+                                # both once approved
+  min_gap_minutes: 30          # no two randomized slots land closer together than this
+
+reddit:
+  access: arctic               # arctic (no auth, archive) | json (blocked as of 2026) | praw (needs approved app)
+  subreddits: [AskReddit, menofreddit, tifu, AmItheAsshole, relationship_advice, confession]
+  # ^ order matters: earlier subreddits are tried first and dominate as long as they yield usable
+  # posts. AskReddit/menofreddit are question+top-comments format (matches the reference videos'
+  # main style); the rest are narrative fallbacks.
+  mode: auto                 # auto | narrative | qa — auto picks by whether the post has real body text
+  listing: top                # top | hot — json/praw only
+  time_filter: month          # for listing: top — day | week | month | year | all — json/praw only
+  min_score: 2000              # bumped from 500 — bias toward clearly viral/popular posts only
+  max_comments: 15             # generous cap — the real length gate is the word-count/duration
+                                 # estimate below, not this; more headroom lets a viral post with
+                                 # plenty of good comments actually reach the target duration
+  min_comments: 3              # reject a qa-mode post if fewer than this many comments qualify
+                                 # (Arctic Shift's comment archive is often sparse even for viral posts)
+  min_comment_score: 15
+  allow_nsfw: false
+  fetch_pool_size: 25
+  archive_min_age_days: 180    # arctic only: skip posts newer than this (scores not settled yet)
+  archive_max_age_days: 730    # arctic only: skip posts older than this
+  archive_samples: 10          # arctic only: random time-slices sampled per subreddit (better odds of a viral hit)
+  archive_sample_span_days: 3  # arctic only: width of each sampled time-slice, in days
 
 card:
   contact_name: "Maddy ❤️"
@@ -25,9 +66,14 @@ output:
   work_dir: output/work
   ready_dir: output/ready
   db_path: data/state.db
+  # OneDrive-synced folder — each assembled video's mp4 + caption.txt land here
+  # automatically, so the caption is one tap away on the phone that does the
+  # actual TikTok posting (TikTok's Sandbox mode doesn't reliably pre-fill it).
+  mobile_sync_dir: /mnt/c/Users/bcard/OneDrive/Desktop/Projects/sfcp/pipeline_output/ready_to_post
+  mobile_sync_cap_gb: 1.0      # oldest video+caption pairs deleted (mtime order) past this cap
 
 music:
-  enabled: false
+  enabled: true
   volume_db: -28             # relative to voice loudnorm target
 
 backgrounds:
