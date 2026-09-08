@@ -1,0 +1,129 @@
+name: Pipeline
+
+# Ephemeral-runner replacement for the old Windows Task Scheduler jobs — see
+# cmd_cloud_tick in src/cli.py and the "Migrating off Windows Task Scheduler"
+# section of HANDOFF.md. Each run checks whether a randomized daily post slot
+# is due; if not, it exits almost immediately (near-zero minutes used). If one
+# is due, it generates, assembles, and publishes exactly one video in this
+# same run, then commits the updated queue/schedule state back to the repo —
+# nothing needs to survive on-disk between separate runs except that one file.
+on:
+  schedule:
+    # GitHub's scheduled triggers can run late under load (a documented
+    # limitation, sometimes by tens of minutes) — acceptable here since
+    # posting times are already randomized/approximate, not second-precise.
+    - cron: "*/20 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Cache Chatterbox model weights
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: chatterbox-model-v1
+
+      - name: Cache downloaded pipeline assets
+        id: cache-assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            assets/backgrounds/normalized
+            assets/voices
+            assets/music
+          key: pipeline-assets-v1
+
+      # Large binaries (background clips, TTS voice references, ambient
+      # music) live as attachments on the "assets-v1" GitHub Release instead
+      # of Git LFS — they total ~1.65GB, over LFS's 1GB free storage tier.
+      # Only runs on a cache miss (first run, or if the cache is ever evicted).
+      - name: Download pipeline assets from release
+        if: steps.cache-assets.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p assets/backgrounds/normalized assets/voices assets/music /tmp/release-assets
+          gh release download assets-v1 --repo "${{ github.repository }}" --dir /tmp/release-assets
+          mv /tmp/release-assets/*.mp4 assets/backgrounds/normalized/
+          mv /tmp/release-assets/chatterbox_ref_*.wav assets/voices/
+          mv /tmp/release-assets/en_US-*.onnx assets/voices/
+          mv /tmp/release-assets/en_US-*.onnx.json assets/voices/
+          mv /tmp/release-assets/soft_ambient.wav assets/music/
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+
+      - name: Install Playwright's Chromium
+        run: .venv/bin/playwright install --with-deps chromium
+
+      - name: Run pipeline tick
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+          INSTAGRAM_APP_ID: ${{ secrets.INSTAGRAM_APP_ID }}
+          INSTAGRAM_APP_SECRET: ${{ secrets.INSTAGRAM_APP_SECRET }}
+          TIKTOK_ACCESS_TOKEN: ${{ secrets.TIKTOK_ACCESS_TOKEN }}
+          TIKTOK_REFRESH_TOKEN: ${{ secrets.TIKTOK_REFRESH_TOKEN }}
+          TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+        run: .venv/bin/python -m src.cli cloud-tick
+
+      - name: Scrub secrets before committing state
+        # data/state.db's `tokens` table caches refreshed access/refresh
+        # tokens — never let a real one reach a commit on this public repo.
+        # _current_token() falls back to the env-supplied secret above when
+        # the DB has none, so this is a no-op functionally, not a data loss.
+        run: |
+          .venv/bin/python -c "
+          import sqlite3
+          conn = sqlite3.connect('data/state.db')
+          conn.execute('DELETE FROM tokens')
+          conn.commit()
+          "
+
+      - name: Commit updated state back to the repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/state.db
+          if ! git diff --cached --quiet; then
+            git commit -m "Update pipeline state [skip ci]"
+            git push origin HEAD:master
+          else
+            echo "No state changes to commit."
+          fi

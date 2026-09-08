@@ -382,30 +382,19 @@ def cmd_publish(args):
 
 # ── auto-publish (randomized daily schedule) ────────────────────────────────
 
-def cmd_auto_publish(args):
+def _ensure_and_get_due_slots(conn, cfg, now):
     """
-    Meant to be invoked frequently (e.g. every 10-15 min via Task Scheduler).
+    Shared by cmd_auto_publish (always-on host: backlog + posting are separate
+    ticks) and cmd_cloud_tick (ephemeral host: one tick does everything).
     On first call each day, randomizes cfg.schedule.posts_per_day target times
-    within [window_start_hour, window_end_hour) and stores them. On every call,
-    publishes the oldest ready 'assembled' video for any slot whose time has
-    passed and hasn't fired yet. If no video is ready when a slot comes due,
-    the slot stays pending and is retried on the next call rather than skipped
-    — a temporarily-empty queue shouldn't cost a post slot for the day.
-
-    Deliberately separate from run-all: generation/tts/render/assemble should
-    happen continuously to keep a buffer of ready videos, but actual posting
-    should only happen at the randomized times. Run both as separate
-    Task Scheduler jobs.
+    within [window_start_hour, window_end_hour) and stores them. Returns
+    (all_of_todays_slots, due_unfired_slots) for the caller to act on.
     """
     import random
-    from datetime import datetime, timedelta
-    from src.db import claim_next, get_todays_slots, create_slots, due_unfired_slots, mark_slot_fired
+    from datetime import timedelta
+    from src.db import get_todays_slots, create_slots, due_unfired_slots
 
-    cfg = _cfg()
-    conn = _db(cfg)
     sc = cfg.schedule
-
-    now = datetime.now()
     today = now.strftime("%Y-%m-%d")
 
     slots = get_todays_slots(conn, today)
@@ -415,7 +404,7 @@ def cmd_auto_publish(args):
         window_seconds = (window_end - window_start).total_seconds()
         if window_seconds <= 0:
             logger.error("schedule.window_end_hour must be after window_start_hour")
-            return
+            return [], []
 
         # Reject-and-resample so no two slots land closer than min_gap_minutes —
         # simplest correct approach for a handful of slots per day.
@@ -436,6 +425,33 @@ def cmd_auto_publish(args):
         slots = get_todays_slots(conn, today)
 
     due = due_unfired_slots(conn, today, now.isoformat())
+    return slots, due
+
+
+def cmd_auto_publish(args):
+    """
+    Meant to be invoked frequently (e.g. every 10-15 min via Task Scheduler)
+    on an always-on host. Publishes the oldest ready 'assembled' video for any
+    slot whose time has passed and hasn't fired yet. If no video is ready when
+    a slot comes due, the slot stays pending and is retried on the next call
+    rather than skipped — a temporarily-empty queue shouldn't cost a post slot
+    for the day.
+
+    Deliberately separate from run-all: generation/tts/render/assemble should
+    happen continuously to keep a buffer of ready videos, but actual posting
+    should only happen at the randomized times. Run both as separate
+    Task Scheduler jobs. (Not used on the GitHub Actions/ephemeral-runner path
+    — see cmd_cloud_tick, which can't rely on a backlog surviving between runs.)
+    """
+    from datetime import datetime
+    from src.db import claim_next, mark_slot_fired
+
+    cfg = _cfg()
+    conn = _db(cfg)
+    sc = cfg.schedule
+    now = datetime.now()
+
+    slots, due = _ensure_and_get_due_slots(conn, cfg, now)
     if not due:
         upcoming = [s["slot_time"][11:16] for s in slots if not s["fired"]]
         logger.info("No slots due yet. Upcoming today: %s", upcoming or "none left")
@@ -453,6 +469,61 @@ def cmd_auto_publish(args):
         mark_slot_fired(conn, slot["id"], row["id"])
         logger.info("Slot %s: published video %d (%s)", slot["slot_time"][11:16], row["id"],
                     "ok" if published else "no platforms configured")
+
+
+def cmd_cloud_tick(args):
+    """
+    Entry point for an ephemeral scheduled runner (GitHub Actions) instead of
+    an always-on host. Unlike run-all/auto-publish's design (build a backlog
+    continuously on one tick, post from it on another), nothing here can rely
+    on intermediate work surviving between invocations except data/state.db
+    itself (which the workflow commits back to the repo) — there's no
+    always-on disk to hold a backlog of assembled-but-unpublished videos.
+
+    So: only when a schedule slot is actually due does this tick do any real
+    work at all, and when it does, it runs generate → tts → render → assemble
+    → publish for ONE video synchronously in a single process, so nothing
+    partially-finished needs to persist afterward. Most invocations (no slot
+    due yet) exit almost immediately and cost near-zero Actions minutes.
+    """
+    from datetime import datetime
+    from src.db import get_video, mark_slot_fired
+
+    cfg = _cfg()
+    conn = _db(cfg)
+    sc = cfg.schedule
+    now = datetime.now()
+
+    slots, due = _ensure_and_get_due_slots(conn, cfg, now)
+    if not due:
+        upcoming = [s["slot_time"][11:16] for s in slots if not s["fired"]]
+        logger.info("No slots due yet. Upcoming today: %s", upcoming or "none left")
+        return
+
+    slot = due[0]   # one video per invocation is enough — any other due slots
+                     # are picked up by the next scheduled tick, same as a
+                     # temporarily-empty queue is handled on the VM path.
+    logger.info("Slot %s is due — generating a video now (no backlog on this runner).",
+                slot["slot_time"][11:16])
+
+    vid_id = cmd_generate(args)
+    stage_args = argparse.Namespace(video_id=vid_id)
+    cmd_tts(stage_args)
+    cmd_render(stage_args)
+    cmd_assemble(stage_args)
+
+    row = get_video(conn, vid_id)
+    if row["status"] != "assembled":
+        logger.error(
+            "Video %d did not reach 'assembled' (status=%s) — slot %s stays unfired, "
+            "will retry next tick.", vid_id, row["status"], slot["slot_time"][11:16]
+        )
+        return
+
+    published = _publish_row(conn, cfg, row, sc.platform)
+    mark_slot_fired(conn, slot["id"], vid_id)
+    logger.info("Slot %s: published video %d (%s)", slot["slot_time"][11:16], vid_id,
+                "ok" if published else "no platforms configured")
 
 
 # ── run-all ───────────────────────────────────────────────────────────────────
@@ -630,6 +701,7 @@ def main():
 
     sub.add_parser("run-all", help="Advance or generate one video end to end")
     sub.add_parser("auto-publish", help="Publish at randomized daily times (cfg.schedule) — separate from run-all")
+    sub.add_parser("cloud-tick", help="Ephemeral-runner entry point (GitHub Actions): generate+publish one video only when a slot is due")
 
     p_ingest = sub.add_parser("ingest", help="Normalize a background clip")
     p_ingest.add_argument("clip", help="Path to source clip")
@@ -647,6 +719,7 @@ def main():
         "publish":   cmd_publish,
         "run-all":   cmd_run_all,
         "auto-publish": cmd_auto_publish,
+        "cloud-tick": cmd_cloud_tick,
         "ingest":    cmd_ingest,
         "status":    cmd_status,
         "monitor":   cmd_monitor,

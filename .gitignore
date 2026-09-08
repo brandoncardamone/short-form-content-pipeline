@@ -1,6 +1,12 @@
 .env
 output/
-data/
+# data/state.db IS tracked — it's the GitHub Actions cloud-tick workflow's
+# only persistence between ephemeral runs (see .github/workflows/pipeline.yml
+# and cmd_cloud_tick in cli.py). Its `tokens` table is scrubbed (DELETE FROM
+# tokens) before every commit — never let a real access/refresh token reach
+# this file in a commit, this repo is public.
+data/*
+!data/state.db
 assets/backgrounds/
 assets/voices/
 src/out/
