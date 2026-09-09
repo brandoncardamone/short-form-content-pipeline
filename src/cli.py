@@ -213,16 +213,25 @@ def cmd_assemble(args):
         cover_ms = _cover_ms_for(row["content_format"], rendered_beats)
         update_video(conn, vid_id, mp4_path=str(out_path), bg_clip=str(bg_clip), cover_ms=cover_ms, status="assembled")
         logger.info("Assembled → %s (cover_ms=%d)", out_path, cover_ms)
+    except Exception as e:
+        update_video(conn, vid_id, status="failed", error=str(e))
+        raise
 
-        if cfg.output.mobile_sync_dir:
+    # Deliberately outside the try above: this is a courtesy copy for manual
+    # TikTok caption-pasting, not part of the actual publish path (which
+    # uploads from out_path directly). Its failure must never overwrite a
+    # genuinely successful assembly with status="failed" — confirmed live on
+    # the GitHub Actions runner 2026-09-09, where this path doesn't exist and
+    # crashed straight through to "failed" before this fix.
+    if cfg.output.mobile_sync_dir:
+        try:
             from src.schema import Script
             caption = Script.model_validate_json(row["script_json"]).caption
             _sync_for_mobile(cfg.output.mobile_sync_dir, vid_id, out_path, caption)
             cap_bytes = int(cfg.output.mobile_sync_cap_gb * 1024 ** 3)
             _enforce_mobile_sync_cap(cfg.output.mobile_sync_dir, cap_bytes)
-    except Exception as e:
-        update_video(conn, vid_id, status="failed", error=str(e))
-        raise
+        except Exception as e:
+            logger.warning("Mobile sync failed for video %d (video itself is fine): %s", vid_id, e)
 
 
 def _sync_for_mobile(sync_dir: Path, vid_id: int, mp4_path: Path, caption: str) -> None:

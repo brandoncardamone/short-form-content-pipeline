@@ -165,6 +165,14 @@ def load_config(config_path: Optional[Path] = None) -> Config:
         with open(path) as f:
             data = yaml.safe_load(f) or {}
 
+    # Explicit override for a host where the configured OneDrive/Dropbox path
+    # in config.yaml doesn't exist (e.g. the GitHub Actions runner — see
+    # .github/workflows/pipeline.yml) — set MOBILE_SYNC_DIR="" in the
+    # environment to disable it there without touching the shared yaml file.
+    # Absent means "use whatever config.yaml says", not "disable".
+    if "MOBILE_SYNC_DIR" in os.environ:
+        data.setdefault("output", {})["mobile_sync_dir"] = os.environ["MOBILE_SYNC_DIR"] or None
+
     # Overlay secrets from environment — never from yaml
     data["gemini_api_key"] = os.getenv("GEMINI_API_KEY")
     data["elevenlabs_api_key"] = os.getenv("ELEVENLABS_API_KEY")

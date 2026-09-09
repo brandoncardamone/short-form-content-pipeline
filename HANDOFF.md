@@ -249,61 +249,84 @@ capped and grows unboundedly — not yet addressed.
    then call `mark_slot_fired()` if a schedule slot is involved — re-running
    `auto-publish` won't re-attempt a row already claimed into `uploading`.
 
-### Migrating off Windows Task Scheduler — Oracle Cloud free VM (2026-09-07)
+### Migrating off Windows Task Scheduler — GitHub Actions, no card required (2026-09-07/09)
 
 Windows Task Scheduler only runs while the host PC is on/awake with network
 access — it went dark during a real outage and missed two scheduled posts
-(caught up manually afterward). Decided to move the whole pipeline to an
-always-on host instead of trying to make the PC-based scheduling more
-resilient. Chosen path: **Oracle Cloud's "Always Free" Ampere A1 VM** (ARM64,
-4 OCPU / 24GB RAM, genuinely free forever, not a time-limited trial) — same
-code, same architecture, cron instead of Task Scheduler. Considered GitHub
-Actions on a public repo (also genuinely free) but rejected it for now: it
-would need real rework (state persistence across ephemeral runs, model
-re-caching, Git LFS for video assets) vs. the VM path's near-zero rework.
+(caught up manually afterward). Wanted to move to an always-on host instead.
+**First choice was Oracle Cloud's Always Free VM** (see git history for that
+plan — scripts/provision_vm.sh and scripts/pipeline.cron still exist from
+that attempt) — but every major cloud VM free tier (Oracle, AWS, GCP, Azure)
+requires a card on file for fraud prevention, which the user explicitly
+didn't want. **Pivoted to GitHub Actions on this public repo instead** —
+genuinely free, zero billing setup, no card, ever. This needed real rework
+(flagged as the tradeoff when this option was first considered) since each
+scheduled run starts from a blank machine — here's what that rework turned
+into, actually built and verified working 2026-09-09:
 
-**Setup (one-time):**
-1. Provision an Always Free Ampere A1 instance in Oracle's console (needs a
-   card on file for identity verification, nothing is charged on this tier;
-   ARM capacity is occasionally temporarily unavailable in a region — retry
-   if so). Ubuntu, SSH key auth (default), no inbound ports needed beyond SSH
-   — this pipeline only makes outbound API calls, nothing listens for
-   inbound traffic.
-2. SSH in, then run `scripts/provision_vm.sh` (in this repo) — clones the
-   repo (public, no auth needed), sets up the venv, installs dependencies,
-   installs Playwright's Chromium + system deps. **Known unverified risk**:
-   this is ARM64, not the x86_64 this pipeline was developed on — torch/
-   chatterbox-tts are expected to have aarch64 Linux wheels on PyPI, but this
-   hasn't been confirmed by an actual install. If `pip install -r
-   requirements.txt` fails trying to build something from source, that's the
-   first thing to suspect.
-3. Transfer what's NOT in git (all gitignored — secrets, DB, and large
-   binary assets) from the old machine via `scp`/`rsync`:
-   - `.env` (secrets)
-   - `data/state.db` (**the existing video queue/history — copy the real
-     file, don't start a fresh empty DB**, or dedup/status tracking resets)
-   - `assets/voices/*.wav` (Chatterbox reference clips — irreplaceable, see
-     TTS section above — don't regenerate these)
-   - `assets/backgrounds/normalized/*.mp4`, `assets/music/*` if present
-   - Rough sizes at time of migration: state.db ~268KB, voices ~136MB,
-     backgrounds ~1.5GB, music ~3MB — small enough for a plain `scp -r`/`rsync`
-     over SSH, no special transfer tooling needed.
-4. Edit `config.yaml` on the VM: set `output.mobile_sync_dir: null` — the
-   configured path is a Windows/OneDrive mount (`/mnt/c/Users/...`) that
-   doesn't exist on a Linux VM. This is currently harmless (TikTok's inbox
-   caption workaround isn't in use while `schedule.platform: instagram`), but
-   revisit if TikTok's Direct Post approval lands and the mobile-sync
-   workaround is still needed — would need a real cloud-to-phone bridge at
-   that point (e.g. rclone against OneDrive's API), not a local mount.
-5. Install `scripts/pipeline.cron` (`crontab scripts/pipeline.cron`) — same
-   two jobs as the old `SFCP-Pipeline`/`SFCP-AutoPublish` Windows tasks
-   (`run-all` and `auto-publish`, both every 15 min), just as plain cron
-   entries instead of `wsl.exe`-wrapped Task Scheduler jobs. Verify with
-   `crontab -l`, then `cli.py status` after the first couple of ticks to
-   confirm state carried over correctly.
-6. Once confirmed working, the Windows Task Scheduler jobs (`SFCP-Pipeline`,
-   `SFCP-AutoPublish`) on the original PC should be deleted so the two
-   machines don't both try to run the pipeline against the same DB.
+**`cli.py cloud-tick`** (new command, distinct from `run-all`/`auto-publish`
+which are still used by the VM/local path and untouched): reuses
+`_ensure_and_get_due_slots()` (factored out of `cmd_auto_publish`) to check
+whether a randomized slot is due. If not, it exits almost immediately — most
+scheduled runs cost near-zero Actions minutes. If a slot **is** due, it runs
+`cmd_generate` → `cmd_tts` → `cmd_render` → `cmd_assemble` → `_publish_row`
+for ONE video synchronously, all inside the same process/run. This is a
+deliberate design difference from the VM path's backlog: an ephemeral runner
+has no always-on disk to hold a backlog of assembled-but-unpublished videos
+between separate runs, so nothing partially-finished needs to survive
+between invocations — generation and publishing happen atomically together,
+on demand, only when a slot actually comes due.
+
+**State persistence — `data/state.db` is now tracked in git**, the only
+thing that needs to survive between ephemeral runs (schedule slots, premise
+dedup, published post IDs). `.gitignore` changed from ignoring all of `data/`
+to `data/*` + `!data/state.db`. **Critical safeguard**: the `tokens` table
+(where refreshed API access/refresh tokens get cached) is `DELETE FROM
+tokens`-scrubbed before every commit, in the workflow, right before `git
+add` — this repo is public, and a real token in that table would otherwise
+get pushed in plaintext. `_current_token()` already falls back to the
+env-supplied secret when the DB has none, so scrubbing costs nothing
+functionally. **Before ever hand-editing or hand-committing this file,
+re-verify that table is empty first.**
+
+**Large binary assets (background clips, Chatterbox/Piper voice files,
+ambient music, ~1.65GB total) live on a GitHub Release (`assets-v1`), not
+Git LFS** — they exceed LFS's 1GB free storage tier. The workflow downloads
+them once via `gh release download` and caches the result via
+`actions/cache` (key `pipeline-assets-v1`) so subsequent runs don't
+re-download. Note GitHub sanitizes release-asset filenames — spaces became
+dots (`"minecraft parkour.mp4"` → `minecraft.parkour.mp4`); harmless, since
+nothing in the pipeline cares about background-clip filenames, but the
+workflow's download step matches the sanitized names, not the originals.
+
+**Model weights**: Chatterbox's ~3GB HuggingFace download is cached via
+`actions/cache` (key `chatterbox-model-v1`) against `~/.cache/huggingface`.
+
+**Secrets**: pushed to the repo's GitHub Actions secrets (Settings → Secrets
+and variables → Actions) — `GEMINI_API_KEY` and the `INSTAGRAM_*`/`TIKTOK_*`
+vars, same names as `.env`, injected as env vars in the workflow step (not
+via a checked-out `.env` file). GitHub-hosted runners are x86_64, so the
+ARM-wheel-availability risk that would have applied to the Oracle VM path
+never came up here.
+
+**Workflow**: `.github/workflows/pipeline.yml`, `on: schedule` (`*/20 * * *
+*`, accepting GitHub's documented occasional lateness under load — fine
+since posting times were already approximate) plus `workflow_dispatch` for
+manual test runs, `concurrency: group: pipeline` so overlapping runs can't
+both try to publish or both try to push `data/state.db`, `permissions:
+contents: write` so the job can push its own commits back.
+
+**Verified live 2026-09-09**: a manual `workflow_dispatch` run succeeded
+end-to-end after secrets were set (an earlier scheduled run had failed
+before secrets existed — `GEMINI_API_KEY is not set`, expected and harmless,
+fixed once secrets were pushed). Confirm current status via `gh run list
+--workflow=pipeline.yml` or the Actions tab.
+
+**Once confirmed reliable**, the Windows Task Scheduler jobs
+(`SFCP-Pipeline`, `SFCP-AutoPublish`) on the original PC need to be disabled
+— running both the PC scheduler and this workflow simultaneously would have
+them racing against and diverging from each other's copy of the schedule/
+video state.
 
 ### Monitoring
 
