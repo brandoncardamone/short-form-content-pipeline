@@ -391,6 +391,24 @@ def cmd_publish(args):
 
 # ── auto-publish (randomized daily schedule) ────────────────────────────────
 
+def _now_in_schedule_tz(cfg):
+    """Naive datetime for the current wall-clock time in cfg.schedule.timezone
+    — a drop-in replacement for datetime.now() that gives the SAME result
+    regardless of which machine/system-timezone actually runs this. Needed
+    once this pipeline started running on both a US-Eastern PC and a UTC
+    GitHub Actions runner: without pinning a zone, "9am-11pm" meant two
+    completely different real-world windows depending on which machine
+    happened to compute it, and most randomized slots were silently landing
+    outside the intended window as a result (confirmed live 2026-09-09 — most
+    of several days' slots never fired). Stays naive (no tzinfo, no offset
+    suffix) so it's a drop-in match for the existing naive slot_time strings
+    already in schedule_slots — only WHICH wall-clock moment "now" resolves
+    to changes, not the storage/comparison format."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo(cfg.schedule.timezone)).replace(tzinfo=None)
+
+
 def _ensure_and_get_due_slots(conn, cfg, now):
     """
     Shared by cmd_auto_publish (always-on host: backlog + posting are separate
@@ -452,13 +470,12 @@ def cmd_auto_publish(args):
     Task Scheduler jobs. (Not used on the GitHub Actions/ephemeral-runner path
     — see cmd_cloud_tick, which can't rely on a backlog surviving between runs.)
     """
-    from datetime import datetime
     from src.db import claim_next, mark_slot_fired
 
     cfg = _cfg()
     conn = _db(cfg)
     sc = cfg.schedule
-    now = datetime.now()
+    now = _now_in_schedule_tz(cfg)
 
     slots, due = _ensure_and_get_due_slots(conn, cfg, now)
     if not due:
@@ -491,17 +508,26 @@ def cmd_cloud_tick(args):
 
     So: only when a schedule slot is actually due does this tick do any real
     work at all, and when it does, it runs generate → tts → render → assemble
-    → publish for ONE video synchronously in a single process, so nothing
-    partially-finished needs to persist afterward. Most invocations (no slot
-    due yet) exit almost immediately and cost near-zero Actions minutes.
+    → publish for each due video synchronously in this same process, so
+    nothing partially-finished needs to persist afterward. Most invocations
+    (no slot due yet) exit almost immediately and cost near-zero Actions
+    minutes.
+
+    Loops over EVERY due slot, not just the first — GitHub's scheduled
+    triggers can run far later than the configured cron interval under load
+    (confirmed live 2026-09-09: actual gaps of several hours against a
+    20-minute cron), so by the time a tick actually runs, more than one of
+    today's slots can already be overdue. Only handling one per tick let the
+    backlog of overdue slots grow faster than it drained on several days —
+    since due_unfired_slots only ever looks at TODAY's date, anything not
+    caught before midnight is permanently missed, not retried tomorrow.
     """
-    from datetime import datetime
     from src.db import get_video, mark_slot_fired
 
     cfg = _cfg()
     conn = _db(cfg)
     sc = cfg.schedule
-    now = datetime.now()
+    now = _now_in_schedule_tz(cfg)
 
     slots, due = _ensure_and_get_due_slots(conn, cfg, now)
     if not due:
@@ -509,30 +535,28 @@ def cmd_cloud_tick(args):
         logger.info("No slots due yet. Upcoming today: %s", upcoming or "none left")
         return
 
-    slot = due[0]   # one video per invocation is enough — any other due slots
-                     # are picked up by the next scheduled tick, same as a
-                     # temporarily-empty queue is handled on the VM path.
-    logger.info("Slot %s is due — generating a video now (no backlog on this runner).",
-                slot["slot_time"][11:16])
+    for slot in due:
+        logger.info("Slot %s is due — generating a video now (no backlog on this runner).",
+                    slot["slot_time"][11:16])
 
-    vid_id = cmd_generate(args)
-    stage_args = argparse.Namespace(video_id=vid_id)
-    cmd_tts(stage_args)
-    cmd_render(stage_args)
-    cmd_assemble(stage_args)
+        vid_id = cmd_generate(args)
+        stage_args = argparse.Namespace(video_id=vid_id)
+        cmd_tts(stage_args)
+        cmd_render(stage_args)
+        cmd_assemble(stage_args)
 
-    row = get_video(conn, vid_id)
-    if row["status"] != "assembled":
-        logger.error(
-            "Video %d did not reach 'assembled' (status=%s) — slot %s stays unfired, "
-            "will retry next tick.", vid_id, row["status"], slot["slot_time"][11:16]
-        )
-        return
+        row = get_video(conn, vid_id)
+        if row["status"] != "assembled":
+            logger.error(
+                "Video %d did not reach 'assembled' (status=%s) — slot %s stays unfired, "
+                "will retry next tick.", vid_id, row["status"], slot["slot_time"][11:16]
+            )
+            continue
 
-    published = _publish_row(conn, cfg, row, sc.platform)
-    mark_slot_fired(conn, slot["id"], vid_id)
-    logger.info("Slot %s: published video %d (%s)", slot["slot_time"][11:16], vid_id,
-                "ok" if published else "no platforms configured")
+        published = _publish_row(conn, cfg, row, sc.platform)
+        mark_slot_fired(conn, slot["id"], vid_id)
+        logger.info("Slot %s: published video %d (%s)", slot["slot_time"][11:16], vid_id,
+                    "ok" if published else "no platforms configured")
 
 
 # ── run-all ───────────────────────────────────────────────────────────────────

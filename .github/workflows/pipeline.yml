@@ -25,7 +25,12 @@ permissions:
 jobs:
   tick:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # cloud-tick now catches up on every overdue slot in one run (not just
+    # the first), since GitHub's actual scheduled cadence can run hours
+    # behind the configured cron — bumped from 90 to comfortably fit
+    # posts_per_day (default 3) full generate cycles back to back if a run
+    # ever needs to catch up on a whole day's worth at once.
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v4

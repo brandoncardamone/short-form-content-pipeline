@@ -93,7 +93,15 @@ class TikTokConfig(BaseModel):
 
 class ScheduleConfig(BaseModel):
     posts_per_day: int = 3
-    window_start_hour: int = 9    # local time; slots are randomized within [start, end)
+    # IANA name, not "local time" — this now runs on machines in different
+    # system timezones (a US-Eastern PC and a UTC GitHub Actions runner), so
+    # window_start_hour/window_end_hour must be pinned to one explicit zone
+    # rather than each machine's own idea of "now". Fixed 2026-09-09 after
+    # confirming live that most randomized slots were silently landing
+    # outside the intended 9am-11pm Eastern window because the GitHub Actions
+    # runner was computing that window in UTC instead.
+    timezone: str = "America/New_York"
+    window_start_hour: int = 9    # in `timezone`; slots are randomized within [start, end)
     window_end_hour: int = 23
     platform: str = "both"        # both | instagram | tiktok — passed to the publish step
     min_gap_minutes: int = 30     # don't let two random slots land closer together than this
