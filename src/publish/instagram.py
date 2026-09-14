@@ -180,7 +180,18 @@ def _upload_bytes(container_id: str, mp4_path: Path, file_size: int, token: str)
             logger.info("Uploaded %d bytes to container %s", file_size - offset, container_id)
             return
         except requests.RequestException as e:
-            logger.warning("Upload attempt %d/%d failed: %s", attempt, UPLOAD_RETRY_LIMIT, e)
+            # requests' default str(e) on an HTTPError is just status+URL —
+            # Meta's actual rejection reason is in the response body, and
+            # without it a real recurring failure (confirmed live
+            # 2026-09-14: several uploads failing all 3 retries) is
+            # undiagnosable from logs alone. resp may be referenced-before-
+            # assignment if the POST itself never returned (timeout/conn
+            # error) — guard for that.
+            body = None
+            if e.response is not None:
+                body = e.response.text[:500]
+            logger.warning("Upload attempt %d/%d failed: %s | response body: %s",
+                            attempt, UPLOAD_RETRY_LIMIT, e, body)
             offset = _query_uploaded_offset(container_id, token, offset)
             if attempt == UPLOAD_RETRY_LIMIT:
                 raise

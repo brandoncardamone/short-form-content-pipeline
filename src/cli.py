@@ -492,9 +492,16 @@ def cmd_auto_publish(args):
             )
             break   # earlier slots take priority; don't skip ahead to a later one either
         published = _publish_row(conn, cfg, row, sc.platform)
-        mark_slot_fired(conn, slot["id"], row["id"])
-        logger.info("Slot %s: published video %d (%s)", slot["slot_time"][11:16], row["id"],
-                    "ok" if published else "no platforms configured")
+        if published:
+            mark_slot_fired(conn, slot["id"], row["id"])
+            logger.info("Slot %s: published video %d", slot["slot_time"][11:16], row["id"])
+        else:
+            # Not marking fired here either (see cmd_cloud_tick for the
+            # incident this fixed) — _publish_row already reverted the video
+            # back to status='assembled' on failure, so the normal backlog
+            # claim on the next call picks it up again naturally.
+            logger.warning("Slot %s: publish failed for video %d — slot stays unfired.",
+                            slot["slot_time"][11:16], row["id"])
 
 
 def cmd_cloud_tick(args):
@@ -522,7 +529,7 @@ def cmd_cloud_tick(args):
     since due_unfired_slots only ever looks at TODAY's date, anything not
     caught before midnight is permanently missed, not retried tomorrow.
     """
-    from src.db import get_video, mark_slot_fired
+    from src.db import claim_next, get_video, mark_slot_fired
 
     cfg = _cfg()
     conn = _db(cfg)
@@ -536,27 +543,46 @@ def cmd_cloud_tick(args):
         return
 
     for slot in due:
-        logger.info("Slot %s is due — generating a video now (no backlog on this runner).",
-                    slot["slot_time"][11:16])
+        # Reuse a leftover assembled-but-never-published video from a prior
+        # failed attempt before generating a fresh one — cheaper (skips a
+        # full generate/tts/render/assemble cycle) and actually gets that
+        # video posted once the underlying issue clears, instead of
+        # abandoning it and burning a new TTS/render cycle every retry.
+        row = claim_next(conn, "assembled", "assembled")
+        if row:
+            vid_id = row["id"]
+            logger.info("Slot %s is due — retrying previously-assembled video %d instead of "
+                        "generating a new one.", slot["slot_time"][11:16], vid_id)
+        else:
+            logger.info("Slot %s is due — generating a video now (no backlog on this runner).",
+                        slot["slot_time"][11:16])
+            vid_id = cmd_generate(args)
+            stage_args = argparse.Namespace(video_id=vid_id)
+            cmd_tts(stage_args)
+            cmd_render(stage_args)
+            cmd_assemble(stage_args)
 
-        vid_id = cmd_generate(args)
-        stage_args = argparse.Namespace(video_id=vid_id)
-        cmd_tts(stage_args)
-        cmd_render(stage_args)
-        cmd_assemble(stage_args)
-
-        row = get_video(conn, vid_id)
-        if row["status"] != "assembled":
-            logger.error(
-                "Video %d did not reach 'assembled' (status=%s) — slot %s stays unfired, "
-                "will retry next tick.", vid_id, row["status"], slot["slot_time"][11:16]
-            )
-            continue
+            row = get_video(conn, vid_id)
+            if row["status"] != "assembled":
+                logger.error(
+                    "Video %d did not reach 'assembled' (status=%s) — slot %s stays unfired, "
+                    "will retry next tick.", vid_id, row["status"], slot["slot_time"][11:16]
+                )
+                continue
 
         published = _publish_row(conn, cfg, row, sc.platform)
-        mark_slot_fired(conn, slot["id"], vid_id)
-        logger.info("Slot %s: published video %d (%s)", slot["slot_time"][11:16], vid_id,
-                    "ok" if published else "no platforms configured")
+        if published:
+            mark_slot_fired(conn, slot["id"], vid_id)
+            logger.info("Slot %s: published video %d", slot["slot_time"][11:16], vid_id)
+        else:
+            # Do NOT mark fired — a slot that silently ate a publish failure
+            # was the actual bug behind days going by with no real post
+            # despite the workflow reporting "success" every run (confirmed
+            # live 2026-09-14: 3 separate videos assembled, slot marked
+            # fired, but instagram_id stayed NULL). Leaving it unfired means
+            # the next due-slot check retries this same video.
+            logger.warning("Slot %s: publish failed for video %d — slot stays unfired, will "
+                            "retry next tick.", slot["slot_time"][11:16], vid_id)
 
 
 # ── run-all ───────────────────────────────────────────────────────────────────
