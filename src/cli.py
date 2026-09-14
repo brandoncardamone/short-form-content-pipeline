@@ -529,7 +529,7 @@ def cmd_cloud_tick(args):
     since due_unfired_slots only ever looks at TODAY's date, anything not
     caught before midnight is permanently missed, not retried tomorrow.
     """
-    from src.db import claim_next, get_video, mark_slot_fired
+    from src.db import get_video, update_video, mark_slot_fired
 
     cfg = _cfg()
     conn = _db(cfg)
@@ -543,32 +543,28 @@ def cmd_cloud_tick(args):
         return
 
     for slot in due:
-        # Reuse a leftover assembled-but-never-published video from a prior
-        # failed attempt before generating a fresh one — cheaper (skips a
-        # full generate/tts/render/assemble cycle) and actually gets that
-        # video posted once the underlying issue clears, instead of
-        # abandoning it and burning a new TTS/render cycle every retry.
-        row = claim_next(conn, "assembled", "assembled")
-        if row:
-            vid_id = row["id"]
-            logger.info("Slot %s is due — retrying previously-assembled video %d instead of "
-                        "generating a new one.", slot["slot_time"][11:16], vid_id)
-        else:
-            logger.info("Slot %s is due — generating a video now (no backlog on this runner).",
-                        slot["slot_time"][11:16])
-            vid_id = cmd_generate(args)
-            stage_args = argparse.Namespace(video_id=vid_id)
-            cmd_tts(stage_args)
-            cmd_render(stage_args)
-            cmd_assemble(stage_args)
+        # Always generates fresh — an 'assembled' row from ANY earlier run
+        # (even a failed publish attempt from a few minutes ago) has no mp4
+        # on THIS runner's disk to reuse; each GitHub Actions run is a brand
+        # new machine. Confirmed live 2026-09-14: an attempt to reuse an old
+        # assembled row (id 11, from 2026-09-01) failed with
+        # "No such file or directory: 'output/ready/video_11.mp4'" — that
+        # file only ever existed on the long-gone runner that built it.
+        logger.info("Slot %s is due — generating a video now (no backlog on this runner).",
+                    slot["slot_time"][11:16])
+        vid_id = cmd_generate(args)
+        stage_args = argparse.Namespace(video_id=vid_id)
+        cmd_tts(stage_args)
+        cmd_render(stage_args)
+        cmd_assemble(stage_args)
 
-            row = get_video(conn, vid_id)
-            if row["status"] != "assembled":
-                logger.error(
-                    "Video %d did not reach 'assembled' (status=%s) — slot %s stays unfired, "
-                    "will retry next tick.", vid_id, row["status"], slot["slot_time"][11:16]
-                )
-                continue
+        row = get_video(conn, vid_id)
+        if row["status"] != "assembled":
+            logger.error(
+                "Video %d did not reach 'assembled' (status=%s) — slot %s stays unfired, "
+                "will retry next tick.", vid_id, row["status"], slot["slot_time"][11:16]
+            )
+            continue
 
         published = _publish_row(conn, cfg, row, sc.platform)
         if published:
@@ -580,9 +576,18 @@ def cmd_cloud_tick(args):
             # despite the workflow reporting "success" every run (confirmed
             # live 2026-09-14: 3 separate videos assembled, slot marked
             # fired, but instagram_id stayed NULL). Leaving it unfired means
-            # the next due-slot check retries this same video.
+            # the next due-slot check tries again with a fresh video.
+            #
+            # Marked 'failed' rather than left at 'assembled': on this
+            # ephemeral runner an unpublished 'assembled' row is not
+            # actually reusable (its mp4 dies with this run), so leaving it
+            # at 'assembled' would misleadingly suggest otherwise to anyone
+            # reading the queue later.
+            update_video(conn, vid_id, status="failed",
+                         error="Publish failed on the GitHub Actions runner; mp4 does not "
+                               "survive to a later run, so this video can't be retried.")
             logger.warning("Slot %s: publish failed for video %d — slot stays unfired, will "
-                            "retry next tick.", slot["slot_time"][11:16], vid_id)
+                            "retry next tick with fresh content.", slot["slot_time"][11:16], vid_id)
 
 
 # ── run-all ───────────────────────────────────────────────────────────────────
