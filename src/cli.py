@@ -409,13 +409,22 @@ def _now_in_schedule_tz(cfg):
     return datetime.now(ZoneInfo(cfg.schedule.timezone)).replace(tzinfo=None)
 
 
+MAX_CATCHUP_SLOTS_PER_RUN = 6    # safety cap — see _ensure_and_get_due_slots
+CATCHUP_MAX_AGE_HOURS = 24        # a slot overdue by more than this is abandoned, not caught up
+
+
 def _ensure_and_get_due_slots(conn, cfg, now):
     """
     Shared by cmd_auto_publish (always-on host: backlog + posting are separate
     ticks) and cmd_cloud_tick (ephemeral host: one tick does everything).
     On first call each day, randomizes cfg.schedule.posts_per_day target times
     within [window_start_hour, window_end_hour) and stores them. Returns
-    (all_of_todays_slots, due_unfired_slots) for the caller to act on.
+    (all_of_todays_slots, due_unfired_slots) for the caller to act on — the
+    due list can include unfired slots from PRIOR days too, not just today
+    (see due_unfired_slots' docstring — this was a real bug, not a design
+    choice originally: two slots were permanently lost 2026-09-14/15 when a
+    gap in GitHub's actual trigger cadence let midnight pass before either
+    was ever checked).
     """
     import random
     from datetime import timedelta
@@ -451,7 +460,17 @@ def _ensure_and_get_due_slots(conn, cfg, now):
                     [t[11:16] for t in slot_times])
         slots = get_todays_slots(conn, today)
 
-    due = due_unfired_slots(conn, today, now.isoformat())
+    # Not date-scoped (see due_unfired_slots) — this can include yesterday's
+    # slots too if a gap in GitHub's actual trigger cadence let midnight pass
+    # before they were checked. Bounded to the last CATCHUP_MAX_AGE_HOURS so
+    # ancient abandoned rows from unrelated past incidents can't resurface
+    # (confirmed live: without this bound, 6-day-old debris outranked an
+    # actually-recent miss under the slot-count cap below, since both are
+    # ordered oldest-first). The count cap after that is just a backstop
+    # against a genuinely pathological multi-day backlog blowing past the
+    # job timeout.
+    cutoff = now - timedelta(hours=CATCHUP_MAX_AGE_HOURS)
+    due = due_unfired_slots(conn, now.isoformat(), cutoff.isoformat())[:MAX_CATCHUP_SLOTS_PER_RUN]
     return slots, due
 
 

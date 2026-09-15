@@ -230,10 +230,27 @@ def create_slots(conn: sqlite3.Connection, date: str, slot_times: list[str]) -> 
             )
 
 
-def due_unfired_slots(conn: sqlite3.Connection, date: str, now_iso: str) -> list[sqlite3.Row]:
+def due_unfired_slots(conn: sqlite3.Connection, now_iso: str, cutoff_iso: str) -> list[sqlite3.Row]:
+    """
+    Deliberately NOT scoped to today's date — an earlier version filtered by
+    `date = ?` here, which meant an overdue slot from yesterday evening
+    became permanently unrecoverable the moment the calendar rolled past
+    midnight before any tick got around to checking it (confirmed live
+    2026-09-14/15: two real slots lost this way during a multi-hour gap in
+    GitHub's actual scheduled-trigger cadence).
+
+    cutoff_iso bounds how far back "due" reaches — without it, unrelated old
+    unfired rows (from unrelated earlier incidents, sitting abandoned for
+    days/weeks) resurface and, worse, crowd out a genuinely-recent miss under
+    a capped result ordered oldest-first (confirmed live: 6 slots from
+    2026-09-04 through 09-08 outranked yesterday's actual miss). A slot only
+    counts as due if it's both overdue AND not older than cutoff_iso —
+    anything staler than that is treated as abandoned, not caught up on.
+    """
     return conn.execute(
-        "SELECT * FROM schedule_slots WHERE date = ? AND fired = 0 AND slot_time <= ? ORDER BY slot_time",
-        (date, now_iso),
+        "SELECT * FROM schedule_slots WHERE fired = 0 AND slot_time <= ? AND slot_time >= ? "
+        "ORDER BY slot_time",
+        (now_iso, cutoff_iso),
     ).fetchall()
 
 
