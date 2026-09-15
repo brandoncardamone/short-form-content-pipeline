@@ -195,6 +195,15 @@ def _upload_bytes(container_id: str, mp4_path: Path, file_size: int, token: str)
             offset = _query_uploaded_offset(container_id, token, offset)
             if attempt == UPLOAD_RETRY_LIMIT:
                 raise
+            # Real response body captured 2026-09-15 on a failed retry:
+            # "The ig container is not in the status to upload a video" —
+            # suggests the container's server-side state machine sometimes
+            # needs a moment to settle after a failed attempt before it'll
+            # accept another upload. Retries were previously back-to-back
+            # (~6-8s apart, dominated by request time alone); an explicit
+            # backoff gives that a chance to resolve instead of hammering
+            # the container in whatever state it's stuck in.
+            time.sleep(5 * attempt)
 
 
 def _query_uploaded_offset(container_id: str, token: str, fallback: int) -> int:
