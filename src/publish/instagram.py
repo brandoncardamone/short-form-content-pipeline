@@ -48,7 +48,8 @@ GRAPH_BASE = "https://graph.facebook.com/v25.0"
 RUPLOAD_BASE = "https://rupload.facebook.com/ig-api-upload"
 POLL_INTERVAL = 10    # seconds
 POLL_TIMEOUT = 600    # seconds — processing can take minutes, per spec
-UPLOAD_RETRY_LIMIT = 3
+UPLOAD_RETRY_LIMIT = 2     # attempts to resume a transfer into the SAME container
+CONTAINER_RETRY_LIMIT = 2  # attempts with a fresh container (see publish_reel)
 AUTH_ERROR_CODES = {190}   # OAuthException — token invalid/revoked
 
 
@@ -109,7 +110,54 @@ def publish_reel(mp4_path: Path, caption: str, cfg, conn=None, cover_ms: int = 0
     user_id = cfg.instagram_user_id
     file_size = mp4_path.stat().st_size
 
-    # Step 1 — create a resumable-upload container
+    # Steps 1-3 (create container → upload bytes → wait for processing) retry as
+    # a unit against a FRESH container each time. A container that has rejected
+    # its bytes once is not reusable: every later upload into it returns "The ig
+    # container is not in the status to upload a video" or a bare "Request
+    # processing failed". So _upload_bytes' in-container retries can only
+    # recover a transfer interrupted mid-flight — never a rejection. Confirmed
+    # live 2026-09-27, when all three in-container attempts failed identically
+    # after the real cause (a transcoder rejection, since fixed in
+    # assemble/build.py) poisoned the container on the first attempt.
+    for attempt in range(1, CONTAINER_RETRY_LIMIT + 1):
+        try:
+            container_id = _stage_container(
+                user_id, mp4_path, file_size, caption, cover_ms, token
+            )
+            break
+        except TokenExpired:
+            raise   # no amount of retrying fixes a rejected token
+        except (requests.RequestException, RuntimeError) as e:
+            logger.warning("Staging attempt %d/%d failed: %s",
+                           attempt, CONTAINER_RETRY_LIMIT, e)
+            if attempt == CONTAINER_RETRY_LIMIT:
+                raise
+            time.sleep(10 * attempt)
+
+    # Step 4 — publish
+    logger.info("Publishing container %s …", container_id)
+    resp = requests.post(
+        f"{GRAPH_BASE}/{user_id}/media_publish",
+        params={"creation_id": container_id, "access_token": token},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    post_id = resp.json()["id"]
+    logger.info("Published: %s", post_id)
+    return post_id
+
+
+def _stage_container(
+    user_id: str,
+    mp4_path: Path,
+    file_size: int,
+    caption: str,
+    cover_ms: int,
+    token: str,
+) -> str:
+    """Create a container, push the bytes into it, and wait for Instagram to
+    finish processing them. Returns a container ready to publish. Any failure
+    leaves the container unusable, so the caller retries with a new one."""
     logger.info("Creating IG Reels resumable container …")
     resp = requests.post(
         f"{GRAPH_BASE}/{user_id}/media",
@@ -128,31 +176,15 @@ def publish_reel(mp4_path: Path, caption: str, cfg, conn=None, cover_ms: int = 0
     logger.info("Container created: %s", container_id)
 
     # A freshly-created container's upload endpoint isn't always immediately
-    # ready — every publish so far has seen the first full-file upload attempt
-    # fail with a 400 after transferring the whole file, succeeding instantly
-    # on retry. A cheap status probe here (the same GET the retry path already
-    # uses) seems to be what makes the container ready, without wasting a full
-    # failed transfer first. Experimental — remove this comment once confirmed
-    # across a few more publishes either way.
+    # ready — early publishes saw the first full-file upload fail with a 400
+    # after transferring the whole file, then succeed instantly on retry. This
+    # cheap status probe (the same GET the resume path uses) appears to settle
+    # the container without wasting a full failed transfer first.
     _query_uploaded_offset(container_id, token, 0)
 
-    # Step 2 — upload raw bytes
     _upload_bytes(container_id, mp4_path, file_size, token)
-
-    # Step 3 — poll until FINISHED
     _wait_for_container(container_id, token)
-
-    # Step 4 — publish
-    logger.info("Publishing container %s …", container_id)
-    resp = requests.post(
-        f"{GRAPH_BASE}/{user_id}/media_publish",
-        params={"creation_id": container_id, "access_token": token},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    post_id = resp.json()["id"]
-    logger.info("Published: %s", post_id)
-    return post_id
+    return container_id
 
 
 def _upload_bytes(container_id: str, mp4_path: Path, file_size: int, token: str) -> None:

@@ -192,6 +192,30 @@ def _background_start_offset(background: Path, total_s: float, safety_margin_s: 
     return random.uniform(0, max_start)
 
 
+# Why the output encode is constrained the way it is (2026-09-27)
+#
+# Instagram was rejecting roughly a third of uploads with
+# "Video Transcoding Error: both HD and SD progressive failed to transcode"
+# (a 500 from rupload.facebook.com), after the file had already passed
+# _verify_output(). The files were structurally fine — they were just outside
+# what IG's transcoder reliably accepts. Four things were wrong, all fixed in
+# _build_cmd below; do not revert one without re-checking the publish failure
+# rate afterwards:
+#
+#   1. Audio was mono 44.1kHz (Chatterbox's native rate, passed straight
+#      through). Reels expects 48kHz stereo — "-ar 48000 -ac 2".
+#   2. Bitrate was uncapped. Bare -crf on high-motion gameplay footage
+#      averaged ~7.5Mbps and spiked well past that, over IG's ~5Mbps
+#      guidance for 1080p. -maxrate/-bufsize cap the spikes while leaving
+#      CRF to save bits on calm footage. This is also why failures looked
+#      random rather than tied to one background clip: it tracked how busy
+#      the chosen clip's footage was at the randomly-picked start offset.
+#   3. Keyframes were at libx264's default (~250 frames / 8.3s, scenecut-
+#      driven). A fixed 2s GOP is what IG's segmenter expects.
+#   4. Colour metadata was unset, inherited from whatever the source gameplay
+#      clip carried. Tagged bt709 explicitly.
+
+
 def _build_cmd(
     background: Path,
     concat_path: Path,
@@ -218,9 +242,16 @@ def _build_cmd(
         "-map", "[v]",
         "-map", audio_map,
         "-t", f"{total_s:.3f}",
+        # Encoder settings are tuned for Instagram's transcoder, not for raw
+        # quality — see the block comment below before loosening any of them.
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+        "-maxrate", "5M", "-bufsize", "10M",
+        "-profile:v", "high", "-level", "4.0",
         "-pix_fmt", "yuv420p", "-r", str(cfg.video.fps),
-        "-c:a", "aac", "-b:a", "128k",
+        "-g", str(cfg.video.fps * 2), "-keyint_min", str(cfg.video.fps * 2),
+        "-sc_threshold", "0",
+        "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
         "-movflags", "+faststart",
         str(out_path),
     ]

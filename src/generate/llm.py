@@ -7,8 +7,21 @@ available; otherwise the caller strips code fences and parses.
 """
 
 import json
+import logging
 import re
+import time
 from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+# Gemini's free tier allows only 5 generate_content requests per minute per
+# model. The generators legitimately make several calls in a row (a duplicate
+# premise or malformed JSON costs a retry, and a single cloud-tick run can
+# catch up on more than one overdue slot), so hitting the per-minute cap is
+# routine rather than exceptional — before this, a 429 crashed the whole run
+# and cost the slot. Waiting the window out is the entire fix.
+RATE_LIMIT_ATTEMPTS = 4
+RATE_LIMIT_SLEEP_S = 65   # just over the 60s window the per-minute quota uses
 
 
 class LLMClient:
@@ -36,8 +49,48 @@ class GeminiClient(LLMClient):
                 response_mime_type="application/json",
             ),
         )
-        response = model.generate_content(prompt)
-        return response.text
+        for attempt in range(1, RATE_LIMIT_ATTEMPTS + 1):
+            try:
+                response = model.generate_content(prompt)
+                return response.text
+            except Exception as e:
+                if not _is_rate_limit(e):
+                    raise
+                # A per-day cap will not clear by waiting a minute — only the
+                # per-minute one will, so do not burn the run's clock on it.
+                if _is_daily_quota(e):
+                    logger.error("Gemini daily free-tier quota is exhausted — not retrying")
+                    raise
+                if attempt == RATE_LIMIT_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "Gemini per-minute quota hit (attempt %d/%d) — waiting %ds",
+                    attempt, RATE_LIMIT_ATTEMPTS, RATE_LIMIT_SLEEP_S,
+                )
+                time.sleep(RATE_LIMIT_SLEEP_S)
+        raise AssertionError("unreachable")
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    """True for Gemini's 429 quota error. Matched structurally where the
+    google.api_core exception type is importable, falling back to the message so
+    a dependency reshuffle cannot silently turn a handled 429 into a crash."""
+    try:
+        from google.api_core.exceptions import ResourceExhausted
+        if isinstance(exc, ResourceExhausted):
+            return True
+    except ImportError:
+        pass
+    text = str(exc)
+    return "429" in text and "quota" in text.lower()
+
+
+def _is_daily_quota(exc: Exception) -> bool:
+    """Distinguish the per-day free-tier cap from the per-minute one. Gemini
+    names the quota in the error body, e.g.
+    GenerateRequestsPerMinutePerProjectPerModel-FreeTier vs ...PerDay..."""
+    text = str(exc).lower()
+    return "perday" in text.replace(" ", "") or "per day" in text
 
 
 def load_client(cfg) -> LLMClient:
