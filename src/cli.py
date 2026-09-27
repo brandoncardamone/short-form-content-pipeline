@@ -409,6 +409,35 @@ def _now_in_schedule_tz(cfg):
     return datetime.now(ZoneInfo(cfg.schedule.timezone)).replace(tzinfo=None)
 
 
+def _minutes_since_last_publish(conn):
+    """Minutes since the most recent successful publish, or None if there has
+    never been one.
+
+    Computed entirely in UTC on purpose: videos.updated_at is written by SQLite
+    CURRENT_TIMESTAMP, which is always UTC, whereas _now_in_schedule_tz returns
+    wall-clock time in the pinned schedule zone. Subtracting one from the other
+    would be silently wrong by that zone offset (4-5 hours for US Eastern).
+    """
+    from datetime import datetime, timezone
+
+    row = conn.execute(
+        "SELECT max(updated_at) FROM videos WHERE status = ?", ("uploaded",)
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        last = datetime.fromisoformat(row[0])
+    except ValueError:
+        logger.warning(
+            "Could not parse last publish time %r — not enforcing min_gap this run", row[0]
+        )
+        return None
+    if last.tzinfo is not None:
+        last = last.astimezone(timezone.utc).replace(tzinfo=None)
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    return (now_utc - last).total_seconds() / 60.0
+
+
 MAX_CATCHUP_SLOTS_PER_RUN = 6    # safety cap — see _ensure_and_get_due_slots
 CATCHUP_MAX_AGE_HOURS = 24        # a slot overdue by more than this is abandoned, not caught up
 
@@ -503,6 +532,29 @@ def cmd_auto_publish(args):
         return
 
     for slot in due:
+        # Honour schedule.min_gap_minutes between ACTUAL posts, not merely
+        # between the randomized slot times. GitHub fires this workflow far less
+        # often than the 20-minute cron asks for (observed: roughly 5 times a
+        # day), so by the time a run happens several slots are overdue at once,
+        # and the catch-up loop was flushing them back to back — real posts
+        # landed 12-22 minutes apart on 2026-09-26/27 despite min_gap_minutes
+        # being 30, which defeats the point of a spread-out schedule.
+        #
+        # Deferring rather than dropping is safe: due_unfired_slots is not
+        # date-scoped, so the slot keeps being offered for
+        # CATCHUP_MAX_AGE_HOURS. And this still permits more than one post in a
+        # single long run, because the check runs after the previous video has
+        # been fully built and published, by which time the gap may genuinely
+        # have elapsed.
+        gap_min = _minutes_since_last_publish(conn)
+        if gap_min is not None and gap_min < sc.min_gap_minutes:
+            logger.info(
+                "Slot %s is due, but the last post went out %.0f min ago and "
+                "schedule.min_gap_minutes is %d — deferring this slot to a later run.",
+                slot["slot_time"][11:16], gap_min, sc.min_gap_minutes,
+            )
+            break
+
         row = claim_next(conn, "assembled", "uploading")
         if not row:
             logger.warning(
@@ -562,6 +614,29 @@ def cmd_cloud_tick(args):
         return
 
     for slot in due:
+        # Honour schedule.min_gap_minutes between ACTUAL posts, not merely
+        # between the randomized slot times. GitHub fires this workflow far less
+        # often than the 20-minute cron asks for (observed: roughly 5 times a
+        # day), so by the time a run happens several slots are overdue at once,
+        # and the catch-up loop was flushing them back to back — real posts
+        # landed 12-22 minutes apart on 2026-09-26/27 despite min_gap_minutes
+        # being 30, which defeats the point of a spread-out schedule.
+        #
+        # Deferring rather than dropping is safe: due_unfired_slots is not
+        # date-scoped, so the slot keeps being offered for
+        # CATCHUP_MAX_AGE_HOURS. And this still permits more than one post in a
+        # single long run, because the check runs after the previous video has
+        # been fully built and published, by which time the gap may genuinely
+        # have elapsed.
+        gap_min = _minutes_since_last_publish(conn)
+        if gap_min is not None and gap_min < sc.min_gap_minutes:
+            logger.info(
+                "Slot %s is due, but the last post went out %.0f min ago and "
+                "schedule.min_gap_minutes is %d — deferring this slot to a later run.",
+                slot["slot_time"][11:16], gap_min, sc.min_gap_minutes,
+            )
+            break
+
         # Always generates fresh — an 'assembled' row from ANY earlier run
         # (even a failed publish attempt from a few minutes ago) has no mp4
         # on THIS runner's disk to reuse; each GitHub Actions run is a brand
