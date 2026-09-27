@@ -1,4 +1,4 @@
-# Short-form content pipeline — handoff (as of 2026-09-03, updated post-scheduling-launch)
+# Short-form content pipeline — handoff (as of 2026-09-27)
 
 This supersedes any earlier `HANDOFF.md`/`SPEC.md`/`PIPELINE.md`/`PUBLISHING.md`.
 If anything here conflicts with older docs or with what the code actually
@@ -328,6 +328,81 @@ fixed once secrets were pushed). Confirm current status via `gh run list
 them racing against and diverging from each other's copy of the schedule/
 video state.
 
+### Reliability fixes after the first two weeks of live running
+
+Four fixes landed 2026-09-14/15, after the Actions migration but before this
+section existed — all in git, none of them previously written down here:
+- Schedule slots were being marked fired even when the publish actually
+  failed, so days went by with the workflow reporting success and no real post.
+- Slots were permanently lost across a midnight rollover when a gap in
+  GitHub's trigger cadence let the day turn over before they were checked.
+  `due_unfired_slots` is no longer date-scoped — it keeps offering an overdue
+  slot for `CATCHUP_MAX_AGE_HOURS` (24) regardless of date.
+- `cloud-tick`'s retry tried to reuse an `assembled` row's mp4, which cannot
+  exist on a later ephemeral runner. It always generates fresh now.
+- Instagram upload retries got spacing instead of firing back-to-back.
+
+Then 2026-09-27, after roughly **a third of all publishes had been failing**
+for a week (21 failed rows against 58 uploaded). All four causes below were
+found by reading the Actions logs — the DB's own error text said only
+"Publish failed on the GitHub Actions runner", which is why this went a week
+without being diagnosed. **When publishes fail, go to the run logs, not the
+`videos.error` column.**
+
+**Instagram was rejecting uploads at the transcode step** ("Video Transcoding
+Error: both HD and SD progressive failed to transcode"), *after* the file had
+already passed `_verify_output()`. The output was structurally valid but
+outside what IG's transcoder reliably accepts. Four things, all fixed in
+`_build_cmd`: mono 44.1kHz audio (Chatterbox's native rate, passed straight
+through) is now 48kHz stereo; uncapped CRF averaging ~7.5Mbps with large spikes
+on busy gameplay is now `-maxrate 5M -bufsize 10M`; libx264's default ~8.3s
+scenecut-driven GOP is now a fixed 2s GOP; colour metadata inherited from
+whatever the source clip carried is now explicitly bt709. There is a block
+comment above `_build_cmd` with the full reasoning — **read it before
+loosening any of those**. This also explains why the failures looked random
+rather than tied to one background clip: they tracked how busy the chosen clip
+happened to be at the randomly-picked start offset. Side benefit, output is
+15-30% smaller, so uploads are quicker too.
+
+**The upload retries could never have recovered any of it.** All three attempts
+reused the same container, and a container that has rejected its bytes once is
+permanently unusable — later attempts return "The ig container is not in the
+status to upload a video" or a bare "Request processing failed", which is
+exactly the identical-failure pattern the logs showed. Container creation,
+upload and processing are now retried as a unit against a **fresh container**
+(`_stage_container`), with `TokenExpired` still failing fast since retrying
+cannot fix a rejected token.
+
+**A Gemini 429 crashed the whole run and cost the slot.** The free tier allows
+only 5 `generate_content` requests per minute, and the generators legitimately
+make several calls in a row (a duplicate premise or malformed JSON each costs a
+retry, and one `cloud-tick` run can catch up on more than one overdue slot), so
+hitting the per-minute cap is routine rather than exceptional. `llm.py` now
+waits the window out and retries, while still failing fast on the per-**day**
+cap, which waiting cannot clear.
+
+**`min_gap_minutes` was not actually being honoured between real posts.** It is
+set to 30, but posts were landing 12-22 minutes apart (11:52/12:05 on 09-26,
+19:42/20:01 on 09-27). The randomized slot *times* respect the gap; nothing
+enforced it at publish time. GitHub fires this workflow far less often than the
+20-minute cron asks — observed ~5 times a day with 4-6 hour gaps, made worse
+by runs taking 20-55 minutes and serializing on the concurrency group — so
+several slots are already overdue whenever a run does happen, and the catch-up
+loop flushed them back-to-back as fast as videos could be built. Both publish
+loops now defer a due slot when the last successful post was inside
+`min_gap_minutes`, and stop processing further slots that run. Deferring is
+safe rather than lossy (slots stay on offer for 24h), and more than one post
+per run is still possible when a run is long enough that the gap genuinely
+elapsed. **`_minutes_since_last_publish` works entirely in UTC on purpose** —
+`videos.updated_at` is SQLite `CURRENT_TIMESTAMP` (always UTC) while
+`_now_in_schedule_tz` is wall-clock in the pinned zone; mixing the two is a
+live 4-5 hour error. It fails open (no enforcement) with no prior publish or an
+unparseable timestamp, so it can never block the first post of a fresh DB.
+
+**Workflow actions moved off deprecated Node 20 majors** — checkout v4 to v7,
+setup-python v5 to v7, cache v4 to v6. Every run had been annotated that
+GitHub was force-running them on Node 24.
+
 ### Monitoring
 
 `cli.py monitor` checks token validity (catches a revoked/broken token
@@ -372,32 +447,55 @@ these without re-litigating why:
 
 ## Pending / next steps
 
-1. Waiting on TikTok's production review decision (submitted 2026-09-03).
-2. Once approved: flip `tiktok.post_mode` to `direct`, retest one video.
-3. Scheduling is **live** (see Full automation section above) — currently
-   `posts_per_day: 3` in `config.yaml`, tunable. Increase only after
-   verifying quality/reach at the current rate.
-4. Longer-term, user-deferred: replace the synthesized ambient music with
-   real royalty-free tracks ("later on we will do option 2").
-5. Content-quality monitoring is manual/qualitative right now — real
-   engagement metrics need the permission/follower-threshold work noted above.
-6. Manually edit `video_1`'s ("Driveway Mystery") live Instagram caption to
-   match the new convention — the API path needs an un-granted permission
-   (`POST /{media-id}?caption=...` fails with a permissions error even with
-   `comment_enabled=true` set), so this has to be done by hand in the app.
-   Suggested text already given to the user: "I literally have chills after
-   reading that name on the band...\n\n#storytime #texts #drama #fyp".
-7. Deliberately not pursued: fake engagement (bot accounts liking/viewing
-   posts) — user asked about this directly, was told no (real ban risk,
-   against platform ToS), and agreed not to pursue it.
+1. **TikTok production review is still undecided** — submitted 2026-09-03, so
+   24 days as of 2026-09-27, past the 2-weeks-max their docs suggest. Worth
+   chasing rather than continuing to wait. `tiktok.post_mode` is still `inbox`
+   and `schedule.platform` is still `instagram`, so nothing posts to TikTok at
+   all right now.
+2. Once approved: flip `tiktok.post_mode` to `direct` **and**
+   `schedule.platform` to `both`, then retest one video. Both code paths are
+   already written and live-tested.
+3. Scheduling is live on GitHub Actions at `posts_per_day: 3`. Raise only after
+   verifying quality/reach at the current rate. Note the real constraint is
+   GitHub's actual trigger cadence (~5 runs/day observed), not the config —
+   raising `posts_per_day` much past that will just accumulate deferred slots.
+4. **Four videos (31-34) sit at `status='assembled'` from 2026-09-07**, from
+   before the cloud migration. Unlike a cloud-orphaned row these still have
+   real mp4s in `output/ready/` on the WSL box, so they are a usable manual
+   backlog rather than debris — but they were built with the **old** encoder
+   settings, so re-run `cli.py assemble --video-id N` on each before posting
+   (video 33 has already been re-encoded). Nothing will publish them
+   automatically: the cloud path always generates fresh and both Task
+   Scheduler jobs are disabled.
+5. Longer-term, user-deferred: replace the synthesized ambient music with real
+   royalty-free tracks ("later on we will do option 2").
+6. Content-quality monitoring is still manual/qualitative. Real engagement
+   metrics need the permission/follower-threshold work noted above.
+7. Manually edit `video_1`'s ("Driveway Mystery") live Instagram caption to
+   match the current convention — the API path needs an un-granted permission
+   (`POST /{media-id}?caption=...` fails even with `comment_enabled=true`), so
+   this has to be done by hand in the app. Suggested text already given to the
+   user: "I literally have chills after reading that name on the band...
+   \n\n#storytime #texts #drama #fyp".
+8. `output.ready_dir` is still uncapped and grows unboundedly on the WSL box.
+   Not yet addressed, and now mostly historical — the cloud runner builds into
+   its own ephemeral disk, so only locally-built videos land there.
+9. Deliberately not pursued: fake engagement (bot accounts liking/viewing
+   posts) — user asked directly, was told no (real ban risk, against platform
+   ToS), and agreed not to pursue it.
 
 ## Where things live
 
 - Code: this repo (`src/`), tests in `tests/`.
 - Reference voice clips: `assets/voices/chatterbox_ref_{female,male}.wav` —
   don't regenerate these from Piper output, see TTS section above.
-- Synced output for mobile posting: `cfg.output.mobile_sync_dir` (currently a
-  OneDrive path under the user's Windows filesystem).
+- Synced output for mobile posting: `cfg.output.mobile_sync_dir` (a OneDrive
+  path under the user's Windows filesystem). **Dead since the Actions
+  migration** — a cloud runner cannot write to the user's OneDrive, so this
+  only ever fills when the pipeline runs locally. It existed purely to hand
+  over videos for manual TikTok posting, which is moot while TikTok is off.
+  Emptied 2026-09-27 (34 stale files, ~823MB); the WSL-local `output.ready_dir`
+  originals were untouched.
 - TikTok legal pages (for the review submission): a GitHub Pages site
   (`terms.html`/`privacy.html` in a public repo, `main` branch, Pages
   enabled) — GitHub Gist was tried first and does NOT work for TikTok's
