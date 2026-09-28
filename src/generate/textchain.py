@@ -2,7 +2,9 @@
 Text-chain script generator. Calls the LLM with a structured prompt and returns
 a validated Script. Checks premise_hash against the DB before accepting.
 
-Target: 24-36 messages, realistic texting register, bounded themes.
+Message count is derived from video.target_duration_* (see _target_messages).
+Theme and hook shape are randomised per script to stop the model collapsing
+onto one template.
 """
 
 import hashlib
@@ -17,11 +19,41 @@ from src.db import premise_exists, premise_hash
 
 logger = logging.getLogger(__name__)
 
+# One theme and one hook shape are drawn at random per generation. Left to its
+# own devices the model collapses onto a single template: of 27 published
+# text chains, 25 opened with the literal word "why" (18 of them "why is...").
+# Every video announced itself as the same video in under a second, which is
+# exactly the window a viewer uses to decide whether to keep watching.
 THEMES = [
     "relationship drama",
     "family secrets",
     "workplace conflict",
     "mild suspense / unexpected revelation",
+    "friendship betrayal",
+    "neighbours, landlords and small-town gossip",
+    "money, wills and inheritance disputes",
+    "roommates and living situations",
+    "an old secret resurfacing years later",
+    "a message that reached the wrong person",
+    "a favour that turns out to have strings attached",
+    "someone being quietly replaced - at work, in a family, in a friendship",
+]
+
+HOOK_SHAPES = [
+    "a flat statement of a disturbing fact, with no question anywhere in it",
+    "someone answering a question the viewer never saw asked",
+    "a single word on its own, then the reveal across the next two bubbles",
+    "an apology for something that has not been explained yet",
+    "someone who has clearly texted the wrong person and already knows it",
+    "a demand to know where the other person is, right now",
+    "someone calmly describing something they are looking at this second",
+    "a threat phrased politely",
+    "an accusation delivered as a compliment",
+    "someone reading aloud from something they just found",
+    "a reply to a photo the viewer cannot see",
+    "someone insisting nothing is wrong while contradicting themselves",
+    "a correction of a small detail that should not matter, but clearly does",
+    "someone thanking the other person for something sinister",
 ]
 
 EXCLUDED = [
@@ -52,12 +84,16 @@ Rules for message content:
   no throat-clearing, no restating what was just said.
 - Use specific, concrete, sensory details (names, places, objects, times) instead of vague ones —
   specificity is what makes it feel real and screenshottable, not generic.
-- Themes: {themes}
+- Theme for THIS script (commit to it, do not drift into the others): {themes}
 - Strictly excluded: {excluded}
 
 Structure (this pacing is what makes these videos work — do not soften it):
 - Message 1: the hook. A single line so alarming, confusing, or specific that someone scrolling
   would stop. Never a lead-in like "hey we need to talk" — start already inside the confrontation.
+  THIS SCRIPT'S HOOK MUST TAKE THIS SHAPE: {hook_shape}
+  Do NOT open with "why is", "why did", "why does", or any other "why ..." question. That opening
+  is heavily overused and instantly recognisable as formulaic — it is banned for this script.
+  Do not open with the other party's name either.
 - Next messages: rapid-fire escalation. Each reveal should make the reader go "wait, what."
 - ~55-65% through: a false resolution or a moment it seems like it might be fine — brief, then broken.
 - Final 3-4 messages: the real twist, worse than expected. It's fine to leave the twist implicit
@@ -83,19 +119,35 @@ Produce exactly {n_messages} messages, the last of which is the in-character cal
 
 MAX_RETRIES = 3
 
+# Measured ~1.38s per message with Chatterbox at the configured speed/gap and
+# this prompt's short-message style (a 34-beat run came out at 47.0s). Derived
+# from the configured target rather than hardcoded, so changing
+# video.target_duration_* actually changes the script length instead of
+# silently producing scripts for the old target.
+SECONDS_PER_BEAT = 1.38
+
+
+def _target_messages(cfg) -> int:
+    mid = (cfg.video.target_duration_min + cfg.video.target_duration_max) / 2
+    return max(12, round(mid / SECONDS_PER_BEAT))
+
 
 def generate_script(cfg, db_conn, n_messages: Optional[int] = None) -> Script:
     """Generate a Script and verify it isn't a duplicate. Retries up to MAX_RETRIES times."""
+    import random
+
     client = load_client(cfg)
-    n = n_messages or 50   # default 50 messages: observed ~1.38s/beat with Chatterbox TTS at
-                            # 1.5x speed/90ms gap and the current short-message prompt (measured on
-                            # a 34-beat run: 47.0s total). 50 brackets ~60-90s across a 1.2-1.8s/beat
-                            # range, covering both terser and more verbose generations.
+    n = n_messages or _target_messages(cfg)
+
+    theme = random.choice(THEMES)
+    hook_shape = random.choice(HOOK_SHAPES)
+    logger.info("Text chain: theme=%r hook shape=%r n=%d", theme, hook_shape, n)
 
     prompt = SYSTEM_PROMPT.format(
-        themes=", ".join(THEMES),
+        themes=theme,
         excluded=", ".join(EXCLUDED),
         n_messages=n,
+        hook_shape=hook_shape,
     )
 
     temperature = 0.9

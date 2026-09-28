@@ -2,8 +2,14 @@ video:
   width: 1080
   height: 1920
   fps: 30
-  target_duration_min: 60   # seconds
-  target_duration_max: 90
+  # Cut from 60-90s on 2026-09-28. Completion rate is the signal that drives
+  # distribution, and an account with no watch history behind it has to earn
+  # that on every video - a 40s video that finishes beats an 80s one that does
+  # not. Text-chain message count derives from these (see textchain.py's
+  # _target_messages), and the Reddit acceptance band is min*0.9..max*0.8, so
+  # raising or lowering these changes both generators automatically.
+  target_duration_min: 30   # seconds
+  target_duration_max: 55
 
 tts:
   engine: chatterbox         # kokoro | piper | elevenlabs | chatterbox (kokoro fails on Python 3.14 due to blis/spacy)
@@ -37,20 +43,29 @@ schedule:
 
 reddit:
   access: arctic               # arctic (no auth, archive) | json (blocked as of 2026) | praw (needs approved app)
-  subreddits: [AskReddit, menofreddit, tifu, AmItheAsshole, relationship_advice, confession]
-  # ^ order matters: earlier subreddits are tried first and dominate as long as they yield usable
-  # posts. AskReddit/menofreddit are question+top-comments format (matches the reference videos'
-  # main style); the rest are narrative fallbacks.
+  subreddits: [AskReddit, menofreddit, tifu, AmItheAsshole, relationship_advice, confession,
+               TrueOffMyChest, pettyrevenge, MaliciousCompliance, offmychest, ChoosingBeggars]
+  # ^ order no longer matters: _candidate_posts_arctic shuffles this list per call. It used to be
+  # significant, and that was the problem - a whole subreddit is yielded before the next one is
+  # tried, so a fixed order meant whichever subreddit reliably produced usable posts won every
+  # time (23 of 33 published Reddit videos were r/tifu despite two subreddits being listed ahead
+  # of it). AskReddit/menofreddit are question+top-comments format; the rest are narrative.
   mode: auto                 # auto | narrative | qa — auto picks by whether the post has real body text
   listing: top                # top | hot — json/praw only
   time_filter: month          # for listing: top — day | week | month | year | all — json/praw only
-  min_score: 2000              # bumped from 500 — bias toward clearly viral/popular posts only
+  min_score: 800               # was 2000. Combined with the narrower duration band above, a 2000
+                               # floor left too small a pool to draw a varied mix from - most
+                               # subreddits never yielded an acceptable post at all, which is how
+                               # r/tifu came to dominate. 800 is still comfortably "this got real
+                               # attention" without starving the selection.
   max_comments: 15             # generous cap — the real length gate is the word-count/duration
                                  # estimate below, not this; more headroom lets a viral post with
                                  # plenty of good comments actually reach the target duration
-  min_comments: 3              # reject a qa-mode post if fewer than this many comments qualify
+  min_comments: 2              # reject a qa-mode post if fewer than this many comments qualify
+                               # (was 3; qa-mode posts were being rejected so often that the
+                               # question+comments format nearly vanished from the output)
                                  # (Arctic Shift's comment archive is often sparse even for viral posts)
-  min_comment_score: 15
+  min_comment_score: 10        # was 15 - same reason as min_comments
   allow_nsfw: false
   fetch_pool_size: 25
   archive_min_age_days: 180    # arctic only: skip posts newer than this (scores not settled yet)

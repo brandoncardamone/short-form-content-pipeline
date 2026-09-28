@@ -157,7 +157,16 @@ def _candidate_posts_arctic(cfg):
     window_end = now - rc.archive_min_age_days * 86400
     span_s = rc.archive_sample_span_days * 86400
 
-    for sub_name in rc.subreddits:
+    # Shuffled, not config order. The selection loop takes the first post that
+    # passes, and this generator yields a whole subreddit before moving on, so
+    # a fixed order let whichever subreddit reliably produced usable posts win
+    # every time: 23 of 33 published Reddit videos were r/tifu, even though
+    # AskReddit and menofreddit are listed ahead of it and the config lists six
+    # subreddits. Shuffling per call gives each one a fair turn at being first.
+    subreddits = list(rc.subreddits)
+    random.shuffle(subreddits)
+
+    for sub_name in subreddits:
         pool: list[_JsonPost] = []
         for _ in range(rc.archive_samples):
             anchor = random.uniform(window_start + span_s, window_end)
@@ -312,18 +321,31 @@ def _build_narrative_script(post, cfg) -> Optional[Script]:
     ts = _relative_time(post.created_utc)
     beats, card_meta = [], []
 
-    for i, chunk in enumerate(chunks):
-        beats.append(Beat(text=chunk, speaker="a", voice=voice))
-        card_meta.append(RedditCardMeta(
+    def _meta(is_first: bool, title):
+        return RedditCardMeta(
             kind="post",
-            is_first_of_unit=(i == 0),
+            is_first_of_unit=is_first,
             subreddit=str(post.subreddit),
             username=str(post.author) if post.author else "deleted",
             timestamp=ts,
             awards=getattr(post, "total_awards_received", 0) or 0,
             is_nsfw=post.over_18,
-            title=post.title if i == 0 else None,
-        ))
+            title=title,
+        )
+
+    # The title is the hook, and it has to be SPOKEN, not merely displayed.
+    # Until 2026-09-28 narrative posts put the title on the first card but
+    # started the voiceover on the body, so the strongest line was silent and
+    # the audio opened on setup ("My Mom is in the military, I've seen her go
+    # from..."). In a format where the first two seconds decide everything,
+    # that threw away the one line chosen for being a hook. _build_qa_script
+    # always did this correctly; this mirrors it.
+    beats.append(Beat(text=post.title, speaker="a", voice=voice))
+    card_meta.append(_meta(True, post.title))
+
+    for chunk in chunks:
+        beats.append(Beat(text=chunk, speaker="a", voice=voice))
+        card_meta.append(_meta(False, None))
 
     return _finish_script(post, beats, card_meta, cfg)
 
