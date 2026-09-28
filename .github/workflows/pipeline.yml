@@ -154,15 +154,48 @@ jobs:
             echo "No data/state.db — nothing to commit."
             exit 0
           fi
-          PY=python3
-          [ -x .venv/bin/python ] && PY=.venv/bin/python
+
+          # if/else rather than `[ -x ... ] && PY=...`: under set -e a failing
+          # test as the last command of a line aborts the whole step.
+          if [ -x .venv/bin/python ]; then
+            PY=.venv/bin/python
+          else
+            PY=python3
+          fi
           "$PY" scripts/scrub_tokens.py
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/state.db
-          if ! git diff --cached --quiet; then
+
+          # The push races anything else that lands on master while a run is in
+          # flight - a run takes 20-50 minutes, and a couple of ordinary code
+          # pushes during one is enough to get it rejected as non-fast-forward.
+          # That is not cosmetic: the step fails, the state is never committed,
+          # and the publish it was recording is forgotten, so a later run can
+          # post a second video for the same slot. Observed 2026-09-28, where a
+          # run published fine and then went red here, losing the record.
+          #
+          # data/state.db is the only file this job changes, and only one run
+          # executes at a time (concurrency group), so this run's copy is
+          # authoritative: take the newest master, lay our state.db on top,
+          # commit, push, and retry from fresh if someone beat us to it.
+          cp data/state.db "$RUNNER_TEMP/state.db"
+          for attempt in 1 2 3; do
+            git fetch --depth=1 origin master
+            git checkout -B master origin/master
+            cp "$RUNNER_TEMP/state.db" data/state.db
+            git add data/state.db
+            if git diff --cached --quiet; then
+              echo "No state changes to commit."
+              exit 0
+            fi
             git commit -m "Update pipeline state [skip ci]"
-            git push origin HEAD:master
-          else
-            echo "No state changes to commit."
-          fi
+            if git push origin HEAD:master; then
+              echo "State committed on attempt $attempt."
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt) — refetching and retrying."
+            sleep $((attempt * 5))
+          done
+          echo "Could not push state after 3 attempts." >&2
+          exit 1
