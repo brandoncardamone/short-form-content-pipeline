@@ -84,7 +84,23 @@ def cmd_generate(args):
         content_format = random.choices(choices, weights=[weights[f] for f in choices])[0]
         logger.info("Format for this video: %s", content_format)
 
-    script = _generate_for_format(content_format, cfg, conn)
+    try:
+        script = _generate_for_format(content_format, cfg, conn)
+    except Exception as e:
+        # reddit_story is the only format that needs no LLM call at all - it
+        # narrates a real sourced post. So when the free tier's per-DAY cap is
+        # gone (20 requests, and four of the five formats spend one each), fall
+        # back to it rather than losing the post. Waiting cannot clear a daily
+        # cap, so there is nothing else to try. Any other error propagates.
+        from src.generate.llm import _is_daily_quota
+        if content_format == "reddit_story" or not _is_daily_quota(e):
+            raise
+        logger.warning(
+            "Gemini daily quota is exhausted - falling back from %s to reddit_story, "
+            "which needs no LLM call.", content_format,
+        )
+        content_format = "reddit_story"
+        script = _generate_for_format(content_format, cfg, conn)
 
     try:
         vid_id = insert_video(
