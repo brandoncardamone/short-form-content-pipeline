@@ -48,8 +48,7 @@ GRAPH_BASE = "https://graph.facebook.com/v25.0"
 RUPLOAD_BASE = "https://rupload.facebook.com/ig-api-upload"
 POLL_INTERVAL = 10    # seconds
 POLL_TIMEOUT = 600    # seconds — processing can take minutes, per spec
-UPLOAD_RETRY_LIMIT = 2     # attempts to resume a transfer into the SAME container
-CONTAINER_RETRY_LIMIT = 2  # attempts with a fresh container (see publish_reel)
+CONTAINER_RETRY_LIMIT = 3  # attempts, each with a fresh container and a full re-upload
 AUTH_ERROR_CODES = {190}   # OAuthException — token invalid/revoked
 
 
@@ -177,9 +176,10 @@ def _stage_container(
 
     # A freshly-created container's upload endpoint isn't always immediately
     # ready — early publishes saw the first full-file upload fail with a 400
-    # after transferring the whole file, then succeed instantly on retry. This
-    # cheap status probe (the same GET the resume path uses) appears to settle
-    # the container without wasting a full failed transfer first.
+    # after transferring the whole file, then succeed on a second try. This
+    # cheap status probe appears to settle the container without wasting a full
+    # failed transfer first. Kept for that reason only; its returned offset is
+    # deliberately ignored, since resuming from it is what corrupted uploads.
     _query_uploaded_offset(container_id, token, 0)
 
     _upload_bytes(container_id, mp4_path, file_size, token)
@@ -188,59 +188,59 @@ def _stage_container(
 
 
 def _upload_bytes(container_id: str, mp4_path: Path, file_size: int, token: str) -> None:
-    """Upload the whole file in one resumable request, retrying from the last
-    confirmed offset on failure (offset/file_size headers are required — Meta's
-    error for omitting them is a confusing ParameterValidationError about Offset)."""
-    offset = 0
-    for attempt in range(1, UPLOAD_RETRY_LIMIT + 1):
-        try:
-            with open(mp4_path, "rb") as fh:
-                fh.seek(offset)
-                body = fh.read()
-            resp = requests.post(
-                f"{RUPLOAD_BASE}/{container_id}",
-                headers={
-                    "Authorization": f"OAuth {token}",
-                    "offset": str(offset),
-                    "file_size": str(file_size),
-                    "Content-Type": "application/octet-stream",
-                },
-                data=body,
-                timeout=180,
-            )
-            resp.raise_for_status()
-            logger.info("Uploaded %d bytes to container %s", file_size - offset, container_id)
-            return
-        except requests.RequestException as e:
-            # requests' default str(e) on an HTTPError is just status+URL —
-            # Meta's actual rejection reason is in the response body, and
-            # without it a real recurring failure (confirmed live
-            # 2026-09-14: several uploads failing all 3 retries) is
-            # undiagnosable from logs alone. resp may be referenced-before-
-            # assignment if the POST itself never returned (timeout/conn
-            # error) — guard for that.
-            body = None
-            if e.response is not None:
-                body = e.response.text[:500]
-            logger.warning("Upload attempt %d/%d failed: %s | response body: %s",
-                            attempt, UPLOAD_RETRY_LIMIT, e, body)
-            offset = _query_uploaded_offset(container_id, token, offset)
-            if attempt == UPLOAD_RETRY_LIMIT:
-                raise
-            # Real response body captured 2026-09-15 on a failed retry:
-            # "The ig container is not in the status to upload a video" —
-            # suggests the container's server-side state machine sometimes
-            # needs a moment to settle after a failed attempt before it'll
-            # accept another upload. Retries were previously back-to-back
-            # (~6-8s apart, dominated by request time alone); an explicit
-            # backoff gives that a chance to resolve instead of hammering
-            # the container in whatever state it's stuck in.
-            time.sleep(5 * attempt)
+    """Upload the whole file in one resumable request, always from offset 0.
+
+    This deliberately does NOT resume from a partial offset, and that is the
+    point. It used to: on failure it asked rupload how many bytes it had
+    ("offset" response header) and re-sent only the remainder. The failure
+    signature that produced says the resumed body is not being reassembled into
+    a valid file — across every observed failure, attempt 1 (full file, offset
+    0) came back a generic 400 "Request processing failed", and attempt 2 (the
+    resumed one) came back 500 "Video Transcoding Error: both HD and SD
+    progressive failed to transcode". The transcode error appeared ONLY on
+    resumed attempts, never on a first full upload, and a first full upload that
+    succeeds transcodes fine. A partial resume that the server then treats as a
+    complete file is exactly what would produce an undecodable video.
+
+    A full re-upload costs seconds at these file sizes (~25-40MB), so resuming
+    was never buying much. publish_reel retries against a FRESH container, which
+    is the only clean way to retry anyway: a container that has rejected its
+    bytes once will not accept more into the same id.
+
+    offset/file_size headers are still required — Meta's error for omitting them
+    is a confusing ParameterValidationError about the Offset header.
+    """
+    with open(mp4_path, "rb") as fh:
+        body = fh.read()
+
+    resp = requests.post(
+        f"{RUPLOAD_BASE}/{container_id}",
+        headers={
+            "Authorization": f"OAuth {token}",
+            "offset": "0",
+            "file_size": str(file_size),
+            "Content-Type": "application/octet-stream",
+        },
+        data=body,
+        timeout=180,
+    )
+    try:
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        # requests' str() on an HTTPError is just status+URL; Meta's actual
+        # rejection reason is in the body, and without it a recurring failure is
+        # undiagnosable from logs alone.
+        body_text = e.response.text[:500] if e.response is not None else None
+        logger.warning("Upload to container %s failed: %s | response body: %s",
+                       container_id, e, body_text)
+        raise
+    logger.info("Uploaded %d bytes to container %s", file_size, container_id)
 
 
 def _query_uploaded_offset(container_id: str, token: str, fallback: int) -> int:
-    """Best-effort: ask how many bytes were received so far, to resume from there.
-    Falls back to the last known offset if the query itself fails."""
+    """Best-effort probe used to settle a freshly-created container before the
+    upload. The returned offset is NOT used to resume a transfer — see
+    _upload_bytes for why resuming corrupted the uploaded file."""
     try:
         resp = requests.get(
             f"{RUPLOAD_BASE}/{container_id}",
