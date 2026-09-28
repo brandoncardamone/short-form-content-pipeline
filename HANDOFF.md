@@ -543,6 +543,86 @@ rejected its bytes. **This is a strong reading of a consistent signature, not a
 proven cause.** If transcode errors reappear on FIRST attempts, this reasoning
 is wrong and should be discarded rather than built on.
 
+### Five content formats, three visual treatments (2026-09-28)
+
+`content.format: random` picks one per video using `content.weights`; set a
+weight to 0 to retire a format without deleting its generator. Adding a format
+means touching `ContentWeights`, `_generate_for_format` and the render dispatch
+in `cli.py` - nowhere else.
+
+| format | source | renderer |
+|---|---|---|
+| `reddit_story` | real Reddit post via Arctic Shift | `reddit_cards.py` |
+| `textchain` | LLM, fake 1:1 iMessage | `cards.py` |
+| `groupchat` | LLM, 3-4 participants | `cards.py` |
+| `wiki_facts` | Wikimedia On This Day | `caption_cards.py` |
+| `monologue` | LLM, confession/diary/voicemail | `caption_cards.py` |
+
+**The caption renderer** (`caption_cards.py`) burns heavy text straight over
+the footage with no card. It shares nothing with the two card templates on
+purpose. One PNG per beat like `reddit_cards.py`, font size measured and shrunk
+per beat. Generators mark one word per beat with `*asterisks*` for a highlight;
+**`cmd_tts` strips those into a copy**, so markers are rendered but never
+spoken - if you add a generator that emits them, that stripping is already
+handled centrally.
+
+**Fonts.** The caption template pins Lato and the workflow apt-installs
+`fonts-lato`. Note the two card templates specify `-apple-system`/`SF Pro`/
+`Segoe UI`/`Roboto`, **none of which exists on Linux**, so they have always
+silently fallen back to DejaVu on both the dev box and the runner. That is why
+the chat cards do not look like iMessage. Pinning a font that is actually
+installed is what makes local output match the runner.
+
+**`wiki_facts` is the first non-Reddit source.** Wikimedia's On This Day feed
+is free, no auth, no approval - unlike every other route into this kind of
+content. The LLM only rewrites a chosen event and is told it may not add facts
+absent from the source; Wikipedia text is CC BY-SA, so rewriting rather than
+reading verbatim is also right licence-wise. Events are filtered against the
+content bounds **before** reaching the LLM, because "on this day" skews heavily
+to wars and massacres (152 fetched, 126 passed in testing).
+
+**`groupchat` voice mapping is a constraint, not a choice.** Only two reference
+clips exist, so the protagonist gets one and every other participant shares the
+other; the on-screen sender labels carry identity instead. A third reference
+clip would let this map properly. Sender names show only on the first bubble of
+a run and bubbles stay gray - one colour per person reads as noise at this size.
+
+**Text-chain contact names come from the script now**, not `card.contact_name`.
+Every video until 2026-09-28 was headed "Maddy" because that single config
+value was used for all of them. Config is now only a fallback for older rows.
+
+### Gemini's real limit: 20 requests per DAY
+
+`gemini-3.6-flash` is capped at **20 requests/day** on the free tier
+(`GenerateRequestsPerDayPerProjectPerModel-FreeTier`, quota_value 20) -
+confirmed live 2026-09-28 by exhausting it during testing. This is the exact
+cap the model was pinned here to escape on `gemini-flash-latest`, so **that
+reasoning in the Credentials section no longer holds**.
+
+Four of the five formats spend one call per video. At 3 posts/day it fits, but
+retries and any manual testing come out of the same 20. `cmd_generate` falls
+back to `reddit_story` - the only format needing no LLM call - when the daily
+cap is hit, so an exhausted quota costs variety rather than the post. `llm.py`
+still fails fast on the per-day cap rather than waiting, since waiting cannot
+clear it.
+
+**When testing generators by hand, remember every call is one of the day's 20.**
+
+### Background clips: there are two, not three
+
+`subway surfers.mp4` and `videoplayback.mp4` are **byte-identical** (same MD5,
+253MB, 193s). So the random picker has three entries but two distinct clips,
+and the duplicate is chosen two times in three. Combined with the clip being
+only 193s long - the start-offset logic needs the video's duration plus a 60s
+margin of headroom - most videos show nearly the same footage.
+
+Longer clips are much better here: the 13.7-minute Minecraft one gives the
+random start real room. **Adding clips means three steps, and the third is easy
+to miss**: `cli.py ingest` each file, upload to the `assets-v1` GitHub Release,
+then **bump the `actions/cache` key** (`pipeline-assets-v1` -> `-v2`). Without
+the key bump the runner keeps restoring the cached old set and never downloads
+the new ones.
+
 ### Monitoring
 
 `cli.py monitor` checks token validity (catches a revoked/broken token
@@ -557,9 +637,10 @@ functions once those are cleared.
 ## Credentials — what's configured (see `.env`, never commit it)
 
 - `GEMINI_API_KEY` — pinned to model `gemini-3.6-flash` in `config.yaml`.
-  **Do not use `gemini-flash-latest` or `gemini-2.5-flash`** — the former
-  silently resolves to a model capped at 20 free-tier requests/day, the
-  latter 404s as unavailable to this account.
+  `gemini-2.5-flash` 404s as unavailable to this account. **The pin no longer
+  buys what it was meant to**: `gemini-3.6-flash` is itself capped at 20
+  requests/day on the free tier, which is exactly the cap it was chosen to
+  escape on `gemini-flash-latest` — see the section above.
 - `ELEVENLABS_API_KEY` — present but unused (quota exhausted, replaced by
   Chatterbox). Harmless to leave.
 - `REDDIT_CLIENT_ID/SECRET/USER_AGENT` — present but unused (PRAW path exists
