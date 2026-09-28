@@ -39,6 +39,16 @@ THEMES = [
     "someone being quietly replaced - at work, in a family, in a friendship",
 ]
 
+# Used only when the model fails to supply a contact_name. Every text chain
+# until 2026-09-28 was headed "Maddy ❤️", because the name came from a single
+# config value rather than from the story — so the same contact appeared in
+# every video regardless of who the script said was texting.
+FALLBACK_CONTACT_NAMES = [
+    "Jess", "Maddy ❤️", "Ryan", "mom", "Dad", "Alexis ✨", "Sam",
+    "Nat 💜", "Chloe", "Marcus", "Priya", "Danny", "Aunt Carol",
+    "Unknown", "Taylor", "Jordan", "Bec 🦋", "Omar", "Hannah", "Luis",
+]
+
 HOOK_SHAPES = [
     "a flat statement of a disturbing fact, with no question anywhere in it",
     "someone answering a question the viewer never saw asked",
@@ -105,6 +115,7 @@ Structure (this pacing is what makes these videos work — do not soften it):
 Output valid JSON only, no markdown fences. Schema:
 {{
   "title": "short internal title",
+  "contact_name": "who speaker A has this conversation saved as, exactly as it would show at the top of their phone - a first name, a nickname, a relationship (mom, Dad, my boss), optionally one emoji. Must fit the story. Vary it; do not default to the same name every time.",
   "hook": "one-sentence hook (same as first message text)",
   "premise": "one-line summary for deduplication",
   "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
@@ -208,6 +219,11 @@ def _parse_script(data: dict, cfg) -> Script:
     # stored initially, not relied on as the final word.
     caption = build_caption("textchain", data.get("hook") or data["title"], data.get("tags", []))
 
+    contact = (data.get("contact_name") or "").strip()
+    if not contact or len(contact) > 24:
+        import random
+        contact = random.choice(FALLBACK_CONTACT_NAMES)
+
     return Script(
         beats=beats,
         title=data["title"],
@@ -215,4 +231,5 @@ def _parse_script(data: dict, cfg) -> Script:
         tags=data.get("tags", []),
         caption=caption,
         premise=data["premise"],
+        contact_name=contact,
     )

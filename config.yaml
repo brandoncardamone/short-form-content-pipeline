@@ -74,6 +74,9 @@ reddit:
   archive_sample_span_days: 3  # arctic only: width of each sampled time-slice, in days
 
 card:
+  # Fallback only. The contact name now comes from the generated script so it
+  # matches the story - see textchain.py. Until 2026-09-28 this single value
+  # headed every text chain, so every video was a conversation with "Maddy".
   contact_name: "Maddy ❤️"
   avatar: null               # path to image, or null for gray circle
 

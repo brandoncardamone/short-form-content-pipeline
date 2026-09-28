@@ -33,6 +33,10 @@ class Script(BaseModel):
     caption: str
     premise: str   # one-line summary, used for dedup
     card_meta: Optional[list[RedditCardMeta]] = None   # reddit_story format only
+    # textchain only: who the conversation is WITH, as it would appear at the
+    # top of a phone. Comes from the generated script so it matches the story;
+    # falls back to config when absent (older rows predate this field).
+    contact_name: Optional[str] = None
 
 
 class RenderedBeat(BaseModel):

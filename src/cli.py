@@ -148,7 +148,10 @@ def cmd_render(args):
         else:
             messages = [{"speaker": b.speaker, "text": b.text} for b in script.beats]
             renderer = CardRenderer(
-                contact_name=cfg.card.contact_name,
+                # From the script, so the name matches the story being told.
+                # cfg.card.contact_name is only a fallback for rows generated
+                # before scripts carried one.
+                contact_name=script.contact_name or cfg.card.contact_name,
                 avatar=cfg.card.avatar,
                 outdir=frames_dir,
             )
