@@ -1,4 +1,4 @@
-# Short-form content pipeline — handoff (as of 2026-09-27)
+# Short-form content pipeline — handoff (as of 2026-09-28)
 
 This supersedes any earlier `HANDOFF.md`/`SPEC.md`/`PIPELINE.md`/`PUBLISHING.md`.
 If anything here conflicts with older docs or with what the code actually
@@ -399,9 +399,83 @@ elapsed. **`_minutes_since_last_publish` works entirely in UTC on purpose** —
 live 4-5 hour error. It fails open (no enforcement) with no prior publish or an
 unparseable timestamp, so it can never block the first post of a fresh DB.
 
+**Failures were invisible, and state was thrown away when they happened.**
+Three compounding problems, all fixed 2026-09-28. The workflow's scrub and
+commit steps had no `if:`, so they defaulted to `if: success()` and a run that
+raised discarded every state change it had already made — including, in the
+worst case, the `instagram_id` of a post that had already gone up, which would
+leave that slot unfired and let a later run post a second video for it. Now
+`if: always()`. The real exception text was only logged, never stored, so
+`videos.error` said nothing but "Publish failed on the GitHub Actions runner"
+for 21 failed videos; `_publish_row` now records the actual reason and
+`cloud-tick` preserves it. And a handled publish failure left the run **green**,
+which is the single reason a third of publishes failing ran for a week
+unnoticed — `cloud-tick` now exits non-zero so the run shows red and GitHub's
+default notification fires. Token scrubbing also moved out of inline YAML into
+`scripts/scrub_tokens.py`: inline it ran as `python -c`, and where only
+`python3` exists the scrub failed while the commit carried on, which on a
+public repo is a credential-leak path rather than a cosmetic bug. The script
+verifies the table is empty afterwards and exits non-zero if not.
+
+**Gemini's own 5xx now retry too.** Five of the six most recent red runs were
+the per-minute 429 already handled; the sixth (2026-09-25) was
+`InternalServerError: 500 Internal error encountered`, which the 429 matcher
+did not catch, so it still killed the run. Transient 500/503/504 now retry on a
+short escalating backoff, separate from the 65s quota wait. A bad API key or the
+per-day cap still fail immediately.
+
 **Workflow actions moved off deprecated Node 20 majors** — checkout v4 to v7,
 setup-python v5 to v7, cache v4 to v6. Every run had been annotated that
 GitHub was force-running them on Node 24.
+
+### Scheduling: why the cron is six fixed times, not a poll (2026-09-28)
+
+**This supersedes the randomized-slot polling described in the Full automation
+section above, for the `cloud-tick` path only.** `cmd_auto_publish` and the
+`schedule_slots` table still work the old way and are untouched, since the
+always-on path still uses them — but both Task Scheduler jobs are disabled, so
+nothing exercises that path today.
+
+The old design randomized N post times per day into `schedule_slots` and ran a
+`*/20` cron that asked, 72 times a day, whether a slot was due. That polling
+existed purely because cron cannot express "sometime random this afternoon".
+It backfired. Measured across 95 scheduled runs:
+
+- GitHub delivered about **6 of the 72** daily triggers (~8%).
+- The gap between consecutive runs was **never under 121 minutes**. Zero gaps
+  below 2h, then a spread from 2-7h.
+- Of those ~6 runs, only **~2.6 a day actually built a video** (28 min each);
+  the rest checked and exited in ~4 min. Against a target of 3 posts/day that
+  is no margin at all.
+
+**That distribution is the important part.** Random load-shedding of a
+20-minute schedule would leave plenty of short gaps — some consecutive triggers
+would survive. A hard floor at 2h with nothing underneath means GitHub is
+enforcing a **minimum interval** on a high-frequency schedule, not dropping at
+random. So polling harder bought nothing and plausibly *caused* the throttling.
+**Do not "fix" a missed post by tightening the cron — that is what caused this.**
+
+The fix inverts it. The cron now fires **six fixed times a day, ~2.5h apart**
+(above the observed floor), chosen so every one lands inside the 9am-11pm
+Eastern window in **both EDT and EST** — cron is always UTC, so a naive choice
+drifts out of the window for half the year. Six opportunities for three posts
+means a dropped or failed trigger costs redundancy rather than the day's post.
+
+`cloud-tick` then decides for itself whether to post:
+- inside `window_start_hour`..`window_end_hour`?
+- has today already had `posts_per_day`? (`_posts_today`)
+- has `min_gap_minutes` elapsed since the last real post?
+
+and waits a random slice of `jitter_max_minutes` (new, default 45) before
+publishing, which is what keeps post times from being identical every day
+despite fixed triggers. Jitter is measured from the start of the run and the
+build counts toward it, so with builds taking ~25 min there is usually little
+or no actual waiting.
+
+`_posts_today` converts the local day boundary to UTC rather than comparing
+date strings, for the same reason `_minutes_since_last_publish` does:
+`videos.updated_at` is SQLite `CURRENT_TIMESTAMP` (UTC) while the window is in
+the pinned zone.
 
 ### Monitoring
 
@@ -455,10 +529,14 @@ these without re-litigating why:
 2. Once approved: flip `tiktok.post_mode` to `direct` **and**
    `schedule.platform` to `both`, then retest one video. Both code paths are
    already written and live-tested.
-3. Scheduling is live on GitHub Actions at `posts_per_day: 3`. Raise only after
-   verifying quality/reach at the current rate. Note the real constraint is
-   GitHub's actual trigger cadence (~5 runs/day observed), not the config —
-   raising `posts_per_day` much past that will just accumulate deferred slots.
+3. Scheduling is live on GitHub Actions at `posts_per_day: 3`, now driven by
+   six fixed cron times plus in-run jitter (see the scheduling section above).
+   **Watch whether the delivery rate actually improves** — the reasoning that
+   a gentler cron gets honoured more reliably is well-supported by the observed
+   2h floor, but it has not yet been confirmed over several days. If posts are
+   still being missed, add cron entries (keeping them >2h apart) rather than
+   tightening the interval. If 3/day proves unreachable, drop `posts_per_day`
+   to 2 so the schedule is honest rather than permanently behind.
 4. **Four videos (31-34) sit at `status='assembled'` from 2026-09-07**, from
    before the cloud migration. Unlike a cloud-orphaned row these still have
    real mp4s in `output/ready/` on the WSL box, so they are a usable manual
