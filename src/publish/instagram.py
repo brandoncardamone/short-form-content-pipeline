@@ -48,7 +48,8 @@ GRAPH_BASE = "https://graph.facebook.com/v25.0"
 RUPLOAD_BASE = "https://rupload.facebook.com/ig-api-upload"
 POLL_INTERVAL = 10    # seconds
 POLL_TIMEOUT = 600    # seconds — processing can take minutes, per spec
-CONTAINER_RETRY_LIMIT = 3  # attempts, each with a fresh container and a full re-upload
+UPLOAD_RETRY_LIMIT = 2     # full re-uploads into the same container (never a partial resume)
+CONTAINER_RETRY_LIMIT = 3  # attempts with a fresh container, each retrying the upload above
 AUTH_ERROR_CODES = {190}   # OAuthException — token invalid/revoked
 
 
@@ -188,53 +189,67 @@ def _stage_container(
 
 
 def _upload_bytes(container_id: str, mp4_path: Path, file_size: int, token: str) -> None:
-    """Upload the whole file in one resumable request, always from offset 0.
+    """Upload the whole file, retrying the WHOLE file - never a partial resume.
 
-    This deliberately does NOT resume from a partial offset, and that is the
-    point. It used to: on failure it asked rupload how many bytes it had
-    ("offset" response header) and re-sent only the remainder. The failure
-    signature that produced says the resumed body is not being reassembled into
-    a valid file — across every observed failure, attempt 1 (full file, offset
-    0) came back a generic 400 "Request processing failed", and attempt 2 (the
-    resumed one) came back 500 "Video Transcoding Error: both HD and SD
-    progressive failed to transcode". The transcode error appeared ONLY on
-    resumed attempts, never on a first full upload, and a first full upload that
-    succeeds transcodes fine. A partial resume that the server then treats as a
-    complete file is exactly what would produce an undecodable video.
+    Two things are true at once here, and the previous two versions of this
+    function each got one of them right and the other wrong.
 
-    A full re-upload costs seconds at these file sizes (~25-40MB), so resuming
-    was never buying much. publish_reel retries against a FRESH container, which
-    is the only clean way to retry anyway: a container that has rejected its
-    bytes once will not accept more into the same id.
+    1. The first upload into a fresh container usually fails with a generic
+       400 "Request processing failed" and the immediate retry succeeds. That
+       has been true since the first publish, so a same-container retry is
+       load-bearing: without it, publishing fails outright. Confirmed again
+       2026-09-28, where both containers 400'd on attempt 1 and the second
+       container's attempt 2 published fine.
 
-    offset/file_size headers are still required — Meta's error for omitting them
+    2. Resuming that retry from a partial byte offset is implicated in the
+       transcoder rejections. The old code asked rupload how many bytes it held
+       (the "offset" response header) and re-sent only the remainder. Every
+       "Video Transcoding Error: both HD and SD progressive failed to
+       transcode" has landed on a resumed attempt, never on a full upload, and
+       a partial body the server then treats as a complete file is exactly what
+       yields an undecodable video. Note this is consistent with the retry
+       usually working: when the failed attempt left nothing behind, the queried
+       offset is 0 and the "resume" was already a full re-upload. Only the
+       non-zero-offset case is suspect.
+
+    So: keep retrying, always send the whole file. The cost is seconds at these
+    sizes. publish_reel escalates to a fresh container after this gives up,
+    since a container that has truly rejected its bytes will not accept more.
+
+    offset/file_size headers are still required - Meta's error for omitting them
     is a confusing ParameterValidationError about the Offset header.
     """
     with open(mp4_path, "rb") as fh:
         body = fh.read()
 
-    resp = requests.post(
-        f"{RUPLOAD_BASE}/{container_id}",
-        headers={
-            "Authorization": f"OAuth {token}",
-            "offset": "0",
-            "file_size": str(file_size),
-            "Content-Type": "application/octet-stream",
-        },
-        data=body,
-        timeout=180,
-    )
-    try:
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        # requests' str() on an HTTPError is just status+URL; Meta's actual
-        # rejection reason is in the body, and without it a recurring failure is
-        # undiagnosable from logs alone.
-        body_text = e.response.text[:500] if e.response is not None else None
-        logger.warning("Upload to container %s failed: %s | response body: %s",
-                       container_id, e, body_text)
-        raise
-    logger.info("Uploaded %d bytes to container %s", file_size, container_id)
+    for attempt in range(1, UPLOAD_RETRY_LIMIT + 1):
+        resp = requests.post(
+            f"{RUPLOAD_BASE}/{container_id}",
+            headers={
+                "Authorization": f"OAuth {token}",
+                "offset": "0",
+                "file_size": str(file_size),
+                "Content-Type": "application/octet-stream",
+            },
+            data=body,
+            timeout=180,
+        )
+        try:
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            # requests' str() on an HTTPError is just status+URL; Meta's actual
+            # rejection reason is in the body, and without it a recurring
+            # failure is undiagnosable from logs alone.
+            body_text = e.response.text[:500] if e.response is not None else None
+            logger.warning("Upload attempt %d/%d to container %s failed: %s | response body: %s",
+                           attempt, UPLOAD_RETRY_LIMIT, container_id, e, body_text)
+            if attempt == UPLOAD_RETRY_LIMIT:
+                raise
+            time.sleep(5 * attempt)
+            continue
+        logger.info("Uploaded %d bytes to container %s (attempt %d)",
+                    file_size, container_id, attempt)
+        return
 
 
 def _query_uploaded_offset(container_id: str, token: str, fallback: int) -> int:
