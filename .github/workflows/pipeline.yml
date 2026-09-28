@@ -2,17 +2,34 @@ name: Pipeline
 
 # Ephemeral-runner replacement for the old Windows Task Scheduler jobs — see
 # cmd_cloud_tick in src/cli.py and the "Migrating off Windows Task Scheduler"
-# section of HANDOFF.md. Each run checks whether a randomized daily post slot
-# is due; if not, it exits almost immediately (near-zero minutes used). If one
-# is due, it generates, assembles, and publishes exactly one video in this
-# same run, then commits the updated queue/schedule state back to the repo —
-# nothing needs to survive on-disk between separate runs except that one file.
+# section of HANDOFF.md. Each run decides for itself whether to post: inside
+# the posting window, under the daily quota, and far enough past the last
+# actual post. If not, it exits almost immediately (near-zero minutes used).
+# If so, it generates, assembles and publishes exactly one video in this same
+# run, then commits the updated queue state back to the repo — nothing needs
+# to survive on-disk between separate runs except that one file.
 on:
   schedule:
-    # GitHub's scheduled triggers can run late under load (a documented
-    # limitation, sometimes by tens of minutes) — acceptable here since
-    # posting times are already randomized/approximate, not second-precise.
-    - cron: "*/20 * * * *"
+    # Fixed times rather than a */20 poll. Measured over 95 scheduled runs,
+    # GitHub delivered ~6 of the 72 daily triggers a 20-minute cron asked for,
+    # and the gap between consecutive runs was NEVER under 121 minutes — no
+    # short gaps at all, then a spread from 2-7h. Random load-shedding would
+    # have left plenty of short gaps, so that floor is GitHub enforcing a
+    # minimum interval on a high-frequency schedule. Polling harder bought
+    # nothing and plausibly caused the throttling.
+    #
+    # These six sit ~2.5h apart (above that floor) and land inside the
+    # 9am-11pm Eastern posting window in BOTH EDT and EST, since cron is always
+    # UTC. Six opportunities for three posts, so a dropped or failed trigger
+    # costs redundancy rather than the day's post. cloud-tick itself decides
+    # whether to post (window / daily quota / min_gap) and jitters the publish
+    # time, so fixed triggers do not mean identical post times every day.
+    - cron: "10 14 * * *"   # 10:10 EDT / 09:10 EST
+    - cron: "40 16 * * *"   # 12:40 EDT / 11:40 EST
+    - cron: "10 19 * * *"   # 15:10 EDT / 14:10 EST
+    - cron: "40 21 * * *"   # 17:40 EDT / 16:40 EST
+    - cron: "10 0 * * *"    # 20:10 EDT / 19:10 EST
+    - cron: "40 2 * * *"    # 22:40 EDT / 21:40 EST
   workflow_dispatch: {}
 
 concurrency:

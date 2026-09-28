@@ -583,134 +583,146 @@ def cmd_auto_publish(args):
                             slot["slot_time"][11:16], row["id"])
 
 
+def _posts_today(conn, cfg, now) -> int:
+    """How many videos actually published today, counted in the pinned schedule
+    zone. videos.updated_at is SQLite CURRENT_TIMESTAMP (UTC), so the local day
+    boundary has to be converted to UTC rather than string-compared."""
+    from datetime import timedelta, timezone
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(cfg.schedule.timezone)
+    start_local = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_utc = (
+        start_local.replace(tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None, microsecond=0)
+    )
+    end_utc = start_utc + timedelta(days=1)
+    row = conn.execute(
+        "SELECT count(*) FROM videos WHERE status = ? AND updated_at >= ? AND updated_at < ?",
+        ("uploaded", start_utc.isoformat(sep=" "), end_utc.isoformat(sep=" ")),
+    ).fetchone()
+    return row[0] if row else 0
+
+
 def cmd_cloud_tick(args):
     """
-    Entry point for an ephemeral scheduled runner (GitHub Actions) instead of
-    an always-on host. Unlike run-all/auto-publish's design (build a backlog
-    continuously on one tick, post from it on another), nothing here can rely
-    on intermediate work surviving between invocations except data/state.db
-    itself (which the workflow commits back to the repo) — there's no
-    always-on disk to hold a backlog of assembled-but-unpublished videos.
+    Entry point for an ephemeral scheduled runner (GitHub Actions) instead of an
+    always-on host. Nothing here can rely on intermediate work surviving between
+    invocations except data/state.db itself (which the workflow commits back to
+    the repo) — there is no always-on disk to hold a backlog of assembled-but-
+    unpublished videos. So a run that decides to post does generate → tts →
+    render → assemble → publish synchronously in this one process.
 
-    So: only when a schedule slot is actually due does this tick do any real
-    work at all, and when it does, it runs generate → tts → render → assemble
-    → publish for each due video synchronously in this same process, so
-    nothing partially-finished needs to persist afterward. Most invocations
-    (no slot due yet) exit almost immediately and cost near-zero Actions
-    minutes.
+    Scheduling model (rewritten 2026-09-28). This used to randomize N slot times
+    per day and poll every 20 minutes asking whether one was due. That polling
+    existed only because cron cannot express "sometime random this afternoon" —
+    and it backfired badly. Measured over 95 scheduled runs, GitHub delivered
+    about 6 of the 72 daily triggers, and the gap between consecutive runs was
+    NEVER under 121 minutes: no gaps at all below 2h, then a spread from 2-7h.
+    Random dropping would have produced plenty of short gaps, so that hard floor
+    is GitHub enforcing a minimum interval on a high-frequency schedule, not
+    load-shedding. Asking every 20 minutes therefore bought nothing and plausibly
+    caused the throttling.
 
-    Loops over EVERY due slot, not just the first — GitHub's scheduled
-    triggers can run far later than the configured cron interval under load
-    (confirmed live 2026-09-09: actual gaps of several hours against a
-    20-minute cron), so by the time a tick actually runs, more than one of
-    today's slots can already be overdue. Only handling one per tick let the
-    backlog of overdue slots grow faster than it drained on several days —
-    since due_unfired_slots only ever looks at TODAY's date, anything not
-    caught before midnight is permanently missed, not retried tomorrow.
+    So the cron now fires a handful of fixed times a day, comfortably above that
+    floor, and each run decides for itself whether to post:
+      - inside the posting window?
+      - has today already had posts_per_day?
+      - has min_gap_minutes elapsed since the last actual post?
+    and then waits a random slice of jitter_max_minutes before publishing, which
+    is what keeps post times from being identical every day. The build takes
+    ~25 minutes on its own and counts toward that jitter, so usually little or
+    no extra waiting actually happens.
+
+    There are more cron times per day than posts_per_day on purpose: a dropped
+    or failed trigger costs redundancy rather than the day's post.
     """
-    from src.db import get_video, update_video, mark_slot_fired
+    import random
+    import time
+    from datetime import timedelta
+
+    from src.db import get_video, update_video
 
     cfg = _cfg()
     conn = _db(cfg)
     sc = cfg.schedule
     now = _now_in_schedule_tz(cfg)
 
-    slots, due = _ensure_and_get_due_slots(conn, cfg, now)
-    if not due:
-        upcoming = [s["slot_time"][11:16] for s in slots if not s["fired"]]
-        logger.info("No slots due yet. Upcoming today: %s", upcoming or "none left")
+    if not (sc.window_start_hour <= now.hour < sc.window_end_hour):
+        logger.info(
+            "%s is outside the posting window (%02d:00-%02d:00 %s) — nothing to do.",
+            now.strftime("%H:%M"), sc.window_start_hour, sc.window_end_hour, sc.timezone,
+        )
         return
 
-    # Whether any due slot failed to publish. Surfaced as a non-zero exit at the
-    # end so the Actions run goes red: a handled publish failure used to leave
-    # the run green, which is why roughly a third of publishes failing went a
-    # week without being noticed. The state commit step runs under if: always(),
-    # so exiting non-zero here no longer costs the state written along the way.
-    failed_any = False
+    done = _posts_today(conn, cfg, now)
+    if done >= sc.posts_per_day:
+        logger.info("Already posted %d/%d today — nothing to do.", done, sc.posts_per_day)
+        return
 
-    for slot in due:
-        # Honour schedule.min_gap_minutes between ACTUAL posts, not merely
-        # between the randomized slot times. GitHub fires this workflow far less
-        # often than the 20-minute cron asks for (observed: roughly 5 times a
-        # day), so by the time a run happens several slots are overdue at once,
-        # and the catch-up loop was flushing them back to back — real posts
-        # landed 12-22 minutes apart on 2026-09-26/27 despite min_gap_minutes
-        # being 30, which defeats the point of a spread-out schedule.
-        #
-        # Deferring rather than dropping is safe: due_unfired_slots is not
-        # date-scoped, so the slot keeps being offered for
-        # CATCHUP_MAX_AGE_HOURS. And this still permits more than one post in a
-        # single long run, because the check runs after the previous video has
-        # been fully built and published, by which time the gap may genuinely
-        # have elapsed.
-        gap_min = _minutes_since_last_publish(conn)
-        if gap_min is not None and gap_min < sc.min_gap_minutes:
-            logger.info(
-                "Slot %s is due, but the last post went out %.0f min ago and "
-                "schedule.min_gap_minutes is %d — deferring this slot to a later run.",
-                slot["slot_time"][11:16], gap_min, sc.min_gap_minutes,
-            )
-            break
+    gap_min = _minutes_since_last_publish(conn)
+    if gap_min is not None and gap_min < sc.min_gap_minutes:
+        logger.info(
+            "Last post went out %.0f min ago and schedule.min_gap_minutes is %d — "
+            "leaving this one to the next run.", gap_min, sc.min_gap_minutes,
+        )
+        return
 
-        # Always generates fresh — an 'assembled' row from ANY earlier run
-        # (even a failed publish attempt from a few minutes ago) has no mp4
-        # on THIS runner's disk to reuse; each GitHub Actions run is a brand
-        # new machine. Confirmed live 2026-09-14: an attempt to reuse an old
-        # assembled row (id 11, from 2026-09-01) failed with
-        # "No such file or directory: 'output/ready/video_11.mp4'" — that
-        # file only ever existed on the long-gone runner that built it.
-        logger.info("Slot %s is due — generating a video now (no backlog on this runner).",
-                    slot["slot_time"][11:16])
-        vid_id = cmd_generate(args)
-        stage_args = argparse.Namespace(video_id=vid_id)
-        cmd_tts(stage_args)
-        cmd_render(stage_args)
-        cmd_assemble(stage_args)
+    # Pick the publish moment up front, then let the build eat into it.
+    jitter = random.uniform(0, sc.jitter_max_minutes)
+    target = now + timedelta(minutes=jitter)
+    window_end = now.replace(hour=sc.window_end_hour, minute=0, second=0, microsecond=0)
+    if target > window_end:
+        target = window_end
+    logger.info(
+        "Post %d/%d for today. Building now, publishing at ~%s (%.0f min of jitter).",
+        done + 1, sc.posts_per_day, target.strftime("%H:%M"), jitter,
+    )
 
-        row = get_video(conn, vid_id)
-        if row["status"] != "assembled":
-            logger.error(
-                "Video %d did not reach 'assembled' (status=%s) — slot %s stays unfired, "
-                "will retry next tick.", vid_id, row["status"], slot["slot_time"][11:16]
-            )
-            continue
+    # Always generates fresh — an 'assembled' row from ANY earlier run (even a
+    # failed publish minutes ago) has no mp4 on THIS runner's disk to reuse;
+    # each run is a brand new machine. Confirmed live 2026-09-14: reusing old
+    # assembled row id 11 failed with "No such file or directory:
+    # 'output/ready/video_11.mp4'" — that file only existed on the long-gone
+    # runner that built it.
+    vid_id = cmd_generate(args)
+    stage_args = argparse.Namespace(video_id=vid_id)
+    cmd_tts(stage_args)
+    cmd_render(stage_args)
+    cmd_assemble(stage_args)
 
-        published = _publish_row(conn, cfg, row, sc.platform)
-        if published:
-            mark_slot_fired(conn, slot["id"], vid_id)
-            logger.info("Slot %s: published video %d", slot["slot_time"][11:16], vid_id)
-        else:
-            # Do NOT mark fired — a slot that silently ate a publish failure
-            # was the actual bug behind days going by with no real post
-            # despite the workflow reporting "success" every run (confirmed
-            # live 2026-09-14: 3 separate videos assembled, slot marked
-            # fired, but instagram_id stayed NULL). Leaving it unfired means
-            # the next due-slot check tries again with a fresh video.
-            #
-            # Marked 'failed' rather than left at 'assembled': on this
-            # ephemeral runner an unpublished 'assembled' row is not
-            # actually reusable (its mp4 dies with this run), so leaving it
-            # at 'assembled' would misleadingly suggest otherwise to anyone
-            # reading the queue later.
-            # Preserve the reason _publish_row just recorded — overwriting it
-            # with only the generic sentence is what made a week of failures
-            # undiagnosable from the queue alone.
-            reason = (get_video(conn, vid_id)["error"] or "reason not recorded")
-            update_video(conn, vid_id, status="failed",
-                         error=f"Publish failed on the GitHub Actions runner ({reason}); "
-                               "mp4 does not survive to a later run, so this video "
-                               "can't be retried.")
-            logger.warning("Slot %s: publish failed for video %d — slot stays unfired, will "
-                            "retry next tick with fresh content.", slot["slot_time"][11:16], vid_id)
-            failed_any = True
-
-    if failed_any:
-        # Fail the run so it shows red and GitHub's default notification fires.
-        # Everything above has already been recorded and the slot is still
-        # eligible for retry — this is purely about visibility.
-        logger.error("At least one due slot failed to publish this run — exiting non-zero "
-                     "so the run is visibly failed rather than silently green.")
+    row = get_video(conn, vid_id)
+    if row["status"] != "assembled":
+        logger.error("Video %d did not reach 'assembled' (status=%s) — nothing published "
+                     "this run.", vid_id, row["status"])
         sys.exit(1)
+
+    remaining_s = (target - _now_in_schedule_tz(cfg)).total_seconds()
+    if remaining_s > 0:
+        logger.info("Build finished early — holding %.0f min to hit the jittered post time.",
+                    remaining_s / 60)
+        time.sleep(remaining_s)
+
+    if _publish_row(conn, cfg, row, sc.platform):
+        logger.info("Published video %d (post %d/%d today).", vid_id, done + 1, sc.posts_per_day)
+        return
+
+    # Marked 'failed' rather than left at 'assembled': on this ephemeral runner
+    # an unpublished 'assembled' row is not actually reusable (its mp4 dies with
+    # this run), so leaving it at 'assembled' would misleadingly suggest
+    # otherwise to anyone reading the queue later. Preserve the reason
+    # _publish_row just recorded — overwriting it with only the generic sentence
+    # is what made a week of failures undiagnosable from the queue alone.
+    reason = get_video(conn, vid_id)["error"] or "reason not recorded"
+    update_video(conn, vid_id, status="failed",
+                 error=f"Publish failed on the GitHub Actions runner ({reason}); "
+                       "mp4 does not survive to a later run, so this video can't be retried.")
+    # Exit non-zero so the run shows red and GitHub's default notification
+    # fires. A handled publish failure used to leave the run green, which is why
+    # roughly a third of publishes failing went a week without being noticed.
+    # Safe only because the state commit step runs under if: always().
+    logger.error("Publish failed for video %d — exiting non-zero so the run is visibly "
+                 "failed rather than silently green.", vid_id)
+    sys.exit(1)
 
 
 # ── run-all ───────────────────────────────────────────────────────────────────

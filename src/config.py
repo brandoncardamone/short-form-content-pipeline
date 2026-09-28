@@ -105,6 +105,11 @@ class ScheduleConfig(BaseModel):
     window_end_hour: int = 23
     platform: str = "both"        # both | instagram | tiktok — passed to the publish step
     min_gap_minutes: int = 30     # don't let two random slots land closer together than this
+    # cloud-tick waits a random 0..jitter_max_minutes before publishing, so
+    # posts do not land at the same clock times every day even though the cron
+    # that triggers them is fixed. Most of this is absorbed by the build, which
+    # takes ~25 min anyway - only the remainder is actually slept.
+    jitter_max_minutes: int = 45
 
 
 class RedditConfig(BaseModel):
