@@ -39,28 +39,43 @@ def _ease_out_back(t: float, overshoot: float) -> float:
     return 1.0 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2
 
 
-def _prepare(messages):
-    """Annotate messages with tail / new_speaker flags."""
+def _prepare(messages, participants=None):
+    """Annotate messages with tail / new_speaker flags.
+
+    participants maps a speaker key to a display name, e.g.
+    {"b": "Dana", "c": "Priya"}. When given, the first message of each run from
+    a non-protagonist speaker carries a `sender` label, which is how a group
+    chat stays readable. One-to-one chats pass nothing and render exactly as
+    before: the contact's name is already in the header, so repeating it above
+    every run would be noise.
+    """
+    participants = participants or {}
     out = []
     for i, m in enumerate(messages):
         nxt = messages[i + 1] if i + 1 < len(messages) else None
         prev = messages[i - 1] if i > 0 else None
+        speaker = m["speaker"].lower()
+        starts_run = prev is None or prev["speaker"].lower() != speaker
         out.append({
             "text": m["text"],
-            "speaker": m["speaker"].lower(),
+            "speaker": speaker,
             "tail": nxt is None or nxt["speaker"] != m["speaker"],
             "new_speaker": prev is not None and prev["speaker"] != m["speaker"],
             "incoming": False,
+            "sender": participants.get(speaker) if (starts_run and speaker != "a") else None,
         })
     return out
 
 
 class CardRenderer:
-    def __init__(self, contact_name="Maddy ❤️", avatar=None, outdir=Path("out")):
+    def __init__(self, contact_name="Maddy ❤️", avatar=None, outdir=Path("out"),
+                 participants=None):
         self.css = (HERE / "card.css").read_text()
         self.tpl = Template((HERE / "card.html").read_text())
         self.contact_name = contact_name
         self.avatar = avatar
+        # {"b": "Dana", "c": "Priya", ...} for group chats; None for 1:1.
+        self.participants = participants or {}
         self.outdir = Path(outdir)
         self.outdir.mkdir(parents=True, exist_ok=True)
         self.max_h = self._css_var("--card-max-content-h")
@@ -97,7 +112,7 @@ class CardRenderer:
         Returns list[Frame] in playback order.
         """
         assert len(messages) == len(beat_durations_ms)
-        prepared = _prepare(messages)
+        prepared = _prepare(messages, self.participants)
         frames = []
         idx = 0
         self.card_boundaries = [{"msg_index": 0, "show_header": True}]

@@ -101,7 +101,11 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          # fonts-lato: the caption format pins Lato rather than inheriting the
+          # -apple-system stack the card templates use, none of which exists on
+          # Linux. Without this the runner silently falls back to a different
+          # face and renders captions unlike anything tested locally.
+          sudo apt-get install -y ffmpeg fonts-lato
 
       - name: Install Python dependencies
         run: |

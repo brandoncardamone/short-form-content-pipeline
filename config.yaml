@@ -21,11 +21,34 @@ tts:
 
 llm:
   provider: gemini
-  model: gemini-3.6-flash   # gemini-2.5-flash no longer available to this account; gemini-flash-latest
-                             # resolves to gemini-3.7-flash, capped at 20 free-tier requests/day
+  model: gemini-3.6-flash   # gemini-2.5-flash no longer available to this account.
+                             # IMPORTANT: this model is itself capped at 20 requests/DAY on the
+                             # free tier (confirmed live 2026-09-28 by exhausting it:
+                             # quota_id GenerateRequestsPerDayPerProjectPerModel-FreeTier,
+                             # quota_value 20). It was pinned here to escape exactly that cap on
+                             # gemini-flash-latest, so that reasoning no longer holds. At 3 posts
+                             # a day with one call each it fits, but retries and any manual
+                             # testing eat into the same 20. llm.py fails fast on the per-day cap
+                             # rather than waiting, since waiting cannot clear it.
 
 content:
-  format: random            # textchain | reddit_story | random (picks one per video, 2026-09-04)
+  # random picks one format per video using the weights below. Five formats,
+  # three visual treatments - see HANDOFF.md.
+  #   reddit_story : real sourced Reddit post, dark Reddit-style cards
+  #   textchain    : fake 1:1 iMessage drama, chat bubbles
+  #   groupchat    : same bubbles, 3-4 participants with sender names
+  #   wiki_facts   : real event from Wikipedia On This Day, full-screen captions
+  #   monologue    : original confession/diary/voicemail, full-screen captions
+  format: random
+  weights:
+    reddit_story: 3
+    textchain: 3
+    groupchat: 2
+    wiki_facts: 2
+    monologue: 2
+  # ^ set any of these to 0 to retire a format without deleting its generator.
+  #   Note every format except reddit_story costs one Gemini call per video,
+  #   and the free tier allows only 20 per DAY - see the note on llm.model.
 
 tiktok:
   post_mode: inbox            # inbox (works today, no review — human pastes caption/hashtags

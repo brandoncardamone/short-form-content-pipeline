@@ -77,8 +77,20 @@ class BackgroundsConfig(BaseModel):
     clips: list[BackgroundClipConfig] = []
 
 
+class ContentWeights(BaseModel):
+    """Relative odds of each format when content.format is "random". A format
+    set to 0 is never produced, which is the way to retire one without
+    deleting its generator."""
+    reddit_story: int = 3
+    textchain: int = 3
+    groupchat: int = 2
+    wiki_facts: int = 2
+    monologue: int = 2
+
+
 class ContentConfig(BaseModel):
     format: str = "textchain"   # textchain | reddit_story | random (cmd_generate picks one per video)
+    weights: ContentWeights = ContentWeights()
 
 
 class TikTokConfig(BaseModel):

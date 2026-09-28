@@ -43,6 +43,31 @@ def _db(cfg):
 
 # ── generate ──────────────────────────────────────────────────────────────────
 
+# Which generator, renderer and cover-frame rule each content_format uses.
+# Adding a format means adding it here, to ContentWeights, and nowhere else.
+CAPTION_FORMATS = ("wiki_facts", "monologue")
+CHAT_FORMATS = ("textchain", "groupchat")
+
+
+def _generate_for_format(content_format: str, cfg, conn):
+    if content_format == "reddit_story":
+        from src.sources.reddit import generate_reddit_script
+        return generate_reddit_script(cfg, conn)
+    if content_format == "wiki_facts":
+        from src.sources.wikipedia import generate_wiki_script
+        return generate_wiki_script(cfg, conn)
+    if content_format == "monologue":
+        from src.generate.monologue import generate_monologue_script
+        return generate_monologue_script(cfg, conn)
+    if content_format == "groupchat":
+        from src.generate.groupchat import generate_groupchat_script
+        return generate_groupchat_script(cfg, conn)
+    if content_format == "textchain":
+        from src.generate.textchain import generate_script
+        return generate_script(cfg, conn)
+    raise ValueError(f"Unknown content format {content_format!r}")
+
+
 def cmd_generate(args):
     cfg = _cfg()
     conn = _db(cfg)
@@ -52,14 +77,14 @@ def cmd_generate(args):
     content_format = cfg.content.format
     if content_format == "random":
         import random
-        content_format = random.choice(["reddit_story", "textchain"])
+        weights = cfg.content.weights.model_dump()
+        choices = [f for f, w in weights.items() if w > 0]
+        if not choices:
+            raise ValueError("Every content.weights entry is 0 - nothing can be generated")
+        content_format = random.choices(choices, weights=[weights[f] for f in choices])[0]
+        logger.info("Format for this video: %s", content_format)
 
-    if content_format == "reddit_story":
-        from src.sources.reddit import generate_reddit_script
-        script = generate_reddit_script(cfg, conn)
-    else:
-        from src.generate.textchain import generate_script
-        script = generate_script(cfg, conn)
+    script = _generate_for_format(content_format, cfg, conn)
 
     try:
         vid_id = insert_video(
@@ -100,7 +125,15 @@ def cmd_tts(args):
     work_dir = Path(cfg.output.work_dir) / f"video_{vid_id}"
 
     try:
-        rendered_beats = run_tts(script, work_dir / "tts", cfg)
+        # *asterisks* mark a word for visual emphasis in the caption renderer
+        # and must never be read aloud. Stripped into a copy so the stored
+        # script keeps the markers for rendering.
+        from src.render.caption_cards import strip_emphasis
+        tts_script = script.model_copy(deep=True)
+        for _b in tts_script.beats:
+            _b.text = strip_emphasis(_b.text)
+
+        rendered_beats = run_tts(tts_script, work_dir / "tts", cfg)
         beats_json = json.dumps([rb.model_dump(mode="json") for rb in rendered_beats], default=str)
         update_video(conn, vid_id, beats_json=beats_json, status="tts_done")
         logger.info("TTS done for video %d — %d beats", vid_id, len(rendered_beats))
@@ -141,10 +174,15 @@ def cmd_render(args):
     durations_ms = [rb.duration_ms + rb.gap_ms for rb in rendered_beats]
 
     try:
-        if row["content_format"] == "reddit_story":
+        fmt = row["content_format"]
+        if fmt == "reddit_story":
             from src.render.reddit_cards import RedditCardRenderer
             renderer = RedditCardRenderer(outdir=frames_dir)
             frames = renderer.render_script(script.beats, script.card_meta, durations_ms)
+        elif fmt in CAPTION_FORMATS:
+            from src.render.caption_cards import CaptionRenderer
+            renderer = CaptionRenderer(outdir=frames_dir)
+            frames = renderer.render_script(script.beats, durations_ms)
         else:
             messages = [{"speaker": b.speaker, "text": b.text} for b in script.beats]
             renderer = CardRenderer(
@@ -154,6 +192,7 @@ def cmd_render(args):
                 contact_name=script.contact_name or cfg.card.contact_name,
                 avatar=cfg.card.avatar,
                 outdir=frames_dir,
+                participants=script.participants,
             )
             frames = renderer.render_script(messages, durations_ms)
 
@@ -280,8 +319,8 @@ def _cover_ms_for(content_format: str, rendered_beats) -> int:
     animation frame (e.g. a chat bubble half-popped-in) looks broken as a still.
     Clamped to land safely within the first beat, before the second one starts."""
     first_beat_ms = rendered_beats[0].duration_ms + rendered_beats[0].gap_ms
-    if content_format == "reddit_story":
-        target = 500.0   # static full-block card for the whole beat — any safe point works
+    if content_format == "reddit_story" or content_format in CAPTION_FORMATS:
+        target = 500.0   # static for the whole beat — any safe point works
     else:
         from src.render.cards import ENTRY_MS
         target = ENTRY_MS + 200.0   # past the bubble pop-in animation, fully "settled"

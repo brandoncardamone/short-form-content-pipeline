@@ -44,9 +44,12 @@
     {% for m in messages %}
     <div class="row {{ m.speaker }}{% if m.tail %} tail{% endif %}{% if m.new_speaker %} new-speaker{% endif %}{% if m.incoming %} incoming{% endif %}"
          {% if m.incoming %}id="incoming"{% endif %}>
-      <div class="bubble"
-           {% if m.incoming %}style="transform: scale({{ scale }}) translateY({{ shift }}px);"{% endif %}>
-        {{ m.text }}
+      <div class="stack">
+        {% if m.sender %}<div class="sender">{{ m.sender }}</div>{% endif %}
+        <div class="bubble"
+             {% if m.incoming %}style="transform: scale({{ scale }}) translateY({{ shift }}px);"{% endif %}>
+          {{ m.text }}
+        </div>
       </div>
     </div>
     {% endfor %}

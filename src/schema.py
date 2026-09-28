@@ -37,6 +37,9 @@ class Script(BaseModel):
     # top of a phone. Comes from the generated script so it matches the story;
     # falls back to config when absent (older rows predate this field).
     contact_name: Optional[str] = None
+    # groupchat only: {"b": "Dana", "c": "Priya"} - the name shown above each
+    # non-protagonist speaker's first bubble in a run.
+    participants: Optional[dict[str, str]] = None
 
 
 class RenderedBeat(BaseModel):

@@ -1,0 +1,68 @@
+/* Full-screen caption format.
+ *
+ * Deliberately shares nothing with card.css or reddit_card.css: the whole
+ * point of this format is that it does not look like either of them. No card,
+ * no chrome - just heavy text burned over the footage, which is the other
+ * dominant short-form look.
+ *
+ * Rendered with omit_background, so everything outside the text is
+ * transparent and the background clip shows through.
+ *
+ * Font is pinned to Lato (installed via apt in the workflow) rather than the
+ * -apple-system stack the other two templates use. Those stacks list no font
+ * that exists on Linux, so they silently fall back to DejaVu on both the dev
+ * box and the runner; pinning one that is actually installed means what is
+ * tested locally is what the runner produces.
+ */
+
+:root {
+  --stroke: 9px;
+  --highlight: #FFE300;
+  --caption-max-w: 900px;
+  --caption-max-h: 1000px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 1080px;
+  height: 1920px;
+  background: transparent;
+  overflow: hidden;
+}
+
+#stage {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  transform: translate(-50%, -50%);
+  width: var(--caption-max-w);
+  max-height: var(--caption-max-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#caption {
+  font-family: "Lato", "DejaVu Sans", "Liberation Sans", sans-serif;
+  font-weight: 900;
+  font-size: 96px;          /* overridden inline by the renderer after measuring */
+  line-height: 1.12;
+  letter-spacing: -0.01em;
+  text-align: center;
+  text-transform: uppercase;
+  color: #fff;
+  text-wrap: balance;
+
+  /* Legibility over arbitrary footage: a hard stroke plus a soft drop shadow.
+   * paint-order keeps the stroke behind the glyph so thin strokes do not eat
+   * into the letterforms. */
+  -webkit-text-stroke: var(--stroke) #000;
+  paint-order: stroke fill;
+  text-shadow:
+    0 6px 0 rgba(0, 0, 0, .55),
+    0 12px 34px rgba(0, 0, 0, .45);
+}
+
+/* Generators mark emphasis by wrapping a word in *asterisks*. */
+#caption .hi { color: var(--highlight); }
