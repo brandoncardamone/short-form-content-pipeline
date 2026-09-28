@@ -477,6 +477,72 @@ date strings, for the same reason `_minutes_since_last_publish` does:
 `videos.updated_at` is SQLite `CURRENT_TIMESTAMP` (UTC) while the window is in
 the pinned zone.
 
+### Content: why videos were flat, and what changed (2026-09-28)
+
+Views sat at 0-250 with a handful of likes and roughly one follower per ten
+videos. Nothing in the pipeline was broken — the content was undifferentiated,
+and measurably so. Four changes, all in `textchain.py`, `reddit.py` and
+`config.yaml`:
+
+**The Reddit narrative path never spoke the title.** The title is picked for
+being a hook and was drawn on the first card, but the voiceover started on body
+text, so the strongest line was silent and the audio opened on setup. Fixed by
+giving the title its own first beat, mirroring what `_build_qa_script` always
+did. **If you touch either builder, keep beat 0 as the title in both.**
+
+**Hooks had collapsed onto one template.** Of 27 published text chains, 25
+opened with the literal word "why" (18 of them "why is..."); of 33 Reddit
+videos, 23 opened "TIFU by...". Same voice, same three clips, same card, same
+opening words — a viewer who saw one recognised the next in under a second. A
+theme and a hook shape are now drawn at random per generation (12 themes, 14
+shapes), the chosen theme is injected as *the* theme rather than a menu, and
+the "why" opener is explicitly banned in the prompt. **If hooks start looking
+samey again, add shapes to `HOOK_SHAPES` rather than rewriting the prompt.**
+
+**Target duration 60-90s -> 30-55s.** Completion rate drives distribution and a
+channel with no watch history has to earn it on every video. Text-chain length
+now derives from the configured duration via `_target_messages` (~31 messages)
+instead of a hardcoded 50, so changing `video.target_duration_*` actually
+changes the scripts. The Reddit acceptance band is `min*0.9..max*0.8`.
+
+**Subreddit choice was a monoculture.** `_candidate_posts_arctic` yields a
+whole subreddit before trying the next and the selector takes the first post
+that passes, so a fixed config order meant one subreddit won every time. The
+list is shuffled per call now, five more subreddits are in the pool, and
+`min_score` dropped 2000 -> 800 (with the comment thresholds loosened) because
+the old floors plus the narrower duration band left too small a pool. **Config
+order is no longer meaningful — do not reorder it expecting an effect.**
+
+Not done, and still worth doing: captions are still the on-screen hook repeated
+verbatim plus generic tags including `#fyp`, which does nothing on Instagram.
+
+### Instagram uploads: never resume from a partial offset (2026-09-28)
+
+The transcoder rejection **came back** on video 97, built with the corrected
+encoder settings — so those settings were necessary but were not the whole
+story. Do not read the encoder section above as having closed this out.
+
+The output itself is provably fine. Probing a finished file: true CFR
+(`r_frame_rate == avg_frame_rate == 30/1`), both streams starting at pts 0,
+frame deltas uniform at 0.03333s, no non-monotonic timestamps, bitrate capped,
+audio 48kHz stereo. Nothing about the bytes explains a transcode failure.
+
+The upload path does. `_upload_bytes` used to resume on failure: ask rupload how
+many bytes it held (the `offset` response header) and re-send only the
+remainder. Every observed failure has the same one-directional signature —
+attempt 1 (full file, offset 0) returns a generic 400 "Request processing
+failed", and attempt 2, **the resumed one**, returns 500 "Video Transcoding
+Error: both HD and SD progressive failed to transcode". The transcode error has
+never appeared on a first full upload, and a first full upload that succeeds
+transcodes fine. A partial resume the server then treats as a complete file is
+exactly what produces an undecodable video.
+
+Uploads are now always the whole file from offset 0, with retries going to a
+**fresh container** (3 attempts) rather than resuming into one that has already
+rejected its bytes. **This is a strong reading of a consistent signature, not a
+proven cause.** If transcode errors reappear on FIRST attempts, this reasoning
+is wrong and should be discarded rather than built on.
+
 ### Monitoring
 
 `cli.py monitor` checks token validity (catches a revoked/broken token
@@ -545,20 +611,24 @@ these without re-litigating why:
    (video 33 has already been re-encoded). Nothing will publish them
    automatically: the cloud path always generates fresh and both Task
    Scheduler jobs are disabled.
-5. Longer-term, user-deferred: replace the synthesized ambient music with real
+5. Captions are still the on-screen hook repeated verbatim plus generic tags
+   including `#fyp`, which does nothing on Instagram. The caption is free space
+   currently spent duplicating text the viewer is already reading. Explicitly
+   deferred on 2026-09-28, not forgotten.
+6. Longer-term, user-deferred: replace the synthesized ambient music with real
    royalty-free tracks ("later on we will do option 2").
-6. Content-quality monitoring is still manual/qualitative. Real engagement
+7. Content-quality monitoring is still manual/qualitative. Real engagement
    metrics need the permission/follower-threshold work noted above.
-7. Manually edit `video_1`'s ("Driveway Mystery") live Instagram caption to
+8. Manually edit `video_1`'s ("Driveway Mystery") live Instagram caption to
    match the current convention — the API path needs an un-granted permission
    (`POST /{media-id}?caption=...` fails even with `comment_enabled=true`), so
    this has to be done by hand in the app. Suggested text already given to the
    user: "I literally have chills after reading that name on the band...
    \n\n#storytime #texts #drama #fyp".
-8. `output.ready_dir` is still uncapped and grows unboundedly on the WSL box.
+9. `output.ready_dir` is still uncapped and grows unboundedly on the WSL box.
    Not yet addressed, and now mostly historical — the cloud runner builds into
    its own ephemeral disk, so only locally-built videos land there.
-9. Deliberately not pursued: fake engagement (bot accounts liking/viewing
+10. Deliberately not pursued: fake engagement (bot accounts liking/viewing
    posts) — user asked directly, was told no (real ban risk, against platform
    ToS), and agreed not to pursue it.
 
