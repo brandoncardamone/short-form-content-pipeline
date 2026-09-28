@@ -309,6 +309,11 @@ def _publish_row(conn, cfg, row, platform: str) -> bool:
     mp4_path = Path(row["mp4_path"])
     cover_ms = row["cover_ms"] if row["cover_ms"] is not None else 500
     published_any = False
+    # The actual exception text, kept so it can be persisted below. Without
+    # this the only record of WHY a publish failed was the Actions run log,
+    # which is awkward to search and expires — which is exactly why roughly a
+    # third of publishes failing went undiagnosed for a week in September.
+    failures: list[str] = []
 
     # Rebuilt fresh here rather than trusting script.caption — a video
     # generated before a caption-convention change would otherwise carry a
@@ -333,6 +338,7 @@ def _publish_row(conn, cfg, row, platform: str) -> bool:
             # schedule slot below. Log loudly and move on; the row stays
             # eligible for a retry since instagram_id is never set on failure.
             logger.error("Instagram publish failed for video %d: %s", vid_id, e)
+            failures.append(f"instagram: {e}")
 
     if platform in ("both", "tiktok") and row["tiktok_id"]:
         logger.info("Video %d already has a TikTok upload (%s) — not re-uploading.",
@@ -347,6 +353,7 @@ def _publish_row(conn, cfg, row, platform: str) -> bool:
             logger.warning("TikTok skipped: %s", e)
         except Exception as e:
             logger.error("TikTok publish failed for video %d: %s", vid_id, e)
+            failures.append(f"tiktok: {e}")
 
     if published_any:
         # Safe to mark 'uploaded' even for a single-platform call: the
@@ -359,7 +366,8 @@ def _publish_row(conn, cfg, row, platform: str) -> bool:
         update_video(conn, vid_id, status="uploaded")
     else:
         logger.warning("%s publish did not succeed for video %d — stays as 'assembled'", platform, vid_id)
-        update_video(conn, vid_id, status="assembled")
+        reason = "; ".join(failures) if failures else "no platform was attempted"
+        update_video(conn, vid_id, status="assembled", error=reason[:600])
 
     return published_any
 
@@ -677,9 +685,14 @@ def cmd_cloud_tick(args):
             # actually reusable (its mp4 dies with this run), so leaving it
             # at 'assembled' would misleadingly suggest otherwise to anyone
             # reading the queue later.
+            # Preserve the reason _publish_row just recorded — overwriting it
+            # with only the generic sentence is what made a week of failures
+            # undiagnosable from the queue alone.
+            reason = (get_video(conn, vid_id)["error"] or "reason not recorded")
             update_video(conn, vid_id, status="failed",
-                         error="Publish failed on the GitHub Actions runner; mp4 does not "
-                               "survive to a later run, so this video can't be retried.")
+                         error=f"Publish failed on the GitHub Actions runner ({reason}); "
+                               "mp4 does not survive to a later run, so this video "
+                               "can't be retried.")
             logger.warning("Slot %s: publish failed for video %d — slot stays unfired, will "
                             "retry next tick with fresh content.", slot["slot_time"][11:16], vid_id)
 

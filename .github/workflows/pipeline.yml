@@ -109,21 +109,33 @@ jobs:
           TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
         run: .venv/bin/python -m src.cli cloud-tick
 
-      - name: Scrub secrets before committing state
-        # data/state.db's `tokens` table caches refreshed access/refresh
-        # tokens — never let a real one reach a commit on this public repo.
-        # _current_token() falls back to the env-supplied secret above when
-        # the DB has none, so this is a no-op functionally, not a data loss.
+      - name: Scrub secrets and commit updated state back to the repo
+        # if: always() is load-bearing. These two steps used to default to
+        # if: success(), so a tick that raised threw away every state change it
+        # had already made. That is not just the day's randomized slots and
+        # premise dedup rows — a crash *after* a successful publish discarded
+        # the instagram_id too, leaving the slot unfired so a later run would
+        # post a second video for it. Observed 2026-09-26, when a Gemini 429
+        # killed the run and both steps below were skipped.
+        #
+        # Scrubbing and committing are deliberately ONE step: data/state.db's
+        # `tokens` table caches refreshed access/refresh tokens and this repo
+        # is public, so a commit must never be reachable without the scrub
+        # having just run. scripts/scrub_tokens.py exits non-zero if any token
+        # row survives, and set -e stops the commit dead if it does. It is a
+        # file rather than an inline python -c because inline it depended on
+        # `python` being on PATH, and where it is not (python3 only) the scrub
+        # failed silently while the commit carried on.
+        if: always()
         run: |
-          .venv/bin/python -c "
-          import sqlite3
-          conn = sqlite3.connect('data/state.db')
-          conn.execute('DELETE FROM tokens')
-          conn.commit()
-          "
-
-      - name: Commit updated state back to the repo
-        run: |
+          set -euo pipefail
+          if [ ! -f data/state.db ]; then
+            echo "No data/state.db — nothing to commit."
+            exit 0
+          fi
+          PY=python3
+          [ -x .venv/bin/python ] && PY=.venv/bin/python
+          "$PY" scripts/scrub_tokens.py
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/state.db
