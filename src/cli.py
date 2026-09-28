@@ -621,6 +621,13 @@ def cmd_cloud_tick(args):
         logger.info("No slots due yet. Upcoming today: %s", upcoming or "none left")
         return
 
+    # Whether any due slot failed to publish. Surfaced as a non-zero exit at the
+    # end so the Actions run goes red: a handled publish failure used to leave
+    # the run green, which is why roughly a third of publishes failing went a
+    # week without being noticed. The state commit step runs under if: always(),
+    # so exiting non-zero here no longer costs the state written along the way.
+    failed_any = False
+
     for slot in due:
         # Honour schedule.min_gap_minutes between ACTUAL posts, not merely
         # between the randomized slot times. GitHub fires this workflow far less
@@ -695,6 +702,15 @@ def cmd_cloud_tick(args):
                                "can't be retried.")
             logger.warning("Slot %s: publish failed for video %d — slot stays unfired, will "
                             "retry next tick with fresh content.", slot["slot_time"][11:16], vid_id)
+            failed_any = True
+
+    if failed_any:
+        # Fail the run so it shows red and GitHub's default notification fires.
+        # Everything above has already been recorded and the slot is still
+        # eligible for retry — this is purely about visibility.
+        logger.error("At least one due slot failed to publish this run — exiting non-zero "
+                     "so the run is visibly failed rather than silently green.")
+        sys.exit(1)
 
 
 # ── run-all ───────────────────────────────────────────────────────────────────

@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 RATE_LIMIT_ATTEMPTS = 4
 RATE_LIMIT_SLEEP_S = 65   # just over the 60s window the per-minute quota uses
 
+# Gemini also returns transient 500/503/504s of its own accord — one killed a
+# run on 2026-09-25 ("500 Internal error encountered") the same way a 429 did.
+# These clear in seconds rather than needing a quota window, so they get their
+# own much shorter backoff.
+TRANSIENT_SLEEP_S = 5
+
 
 class LLMClient:
     def complete(self, prompt: str, temperature: float = 0.9) -> str:
@@ -54,20 +60,28 @@ class GeminiClient(LLMClient):
                 response = model.generate_content(prompt)
                 return response.text
             except Exception as e:
-                if not _is_rate_limit(e):
-                    raise
-                # A per-day cap will not clear by waiting a minute — only the
-                # per-minute one will, so do not burn the run's clock on it.
-                if _is_daily_quota(e):
-                    logger.error("Gemini daily free-tier quota is exhausted — not retrying")
+                if _is_rate_limit(e):
+                    # A per-day cap will not clear by waiting a minute — only
+                    # the per-minute one will, so do not burn the run's clock.
+                    if _is_daily_quota(e):
+                        logger.error(
+                            "Gemini daily free-tier quota is exhausted — not retrying"
+                        )
+                        raise
+                    wait_s = RATE_LIMIT_SLEEP_S
+                    what = "per-minute quota"
+                elif _is_transient_server_error(e):
+                    wait_s = TRANSIENT_SLEEP_S * attempt
+                    what = "transient server error"
+                else:
                     raise
                 if attempt == RATE_LIMIT_ATTEMPTS:
                     raise
                 logger.warning(
-                    "Gemini per-minute quota hit (attempt %d/%d) — waiting %ds",
-                    attempt, RATE_LIMIT_ATTEMPTS, RATE_LIMIT_SLEEP_S,
+                    "Gemini %s (attempt %d/%d) — waiting %ds: %s",
+                    what, attempt, RATE_LIMIT_ATTEMPTS, wait_s, e,
                 )
-                time.sleep(RATE_LIMIT_SLEEP_S)
+                time.sleep(wait_s)
         raise AssertionError("unreachable")
 
 
@@ -83,6 +97,33 @@ def _is_rate_limit(exc: Exception) -> bool:
         pass
     text = str(exc)
     return "429" in text and "quota" in text.lower()
+
+
+def _is_transient_server_error(exc: Exception) -> bool:
+    """True for Gemini's own 5xx blips, which clear on their own. Distinct from
+    a 429: these need seconds, not a quota window. Matched structurally where
+    google.api_core is importable, with a message fallback for the same reason
+    _is_rate_limit has one."""
+    try:
+        from google.api_core.exceptions import (
+            DeadlineExceeded,
+            InternalServerError,
+            ServiceUnavailable,
+        )
+        if isinstance(exc, (InternalServerError, ServiceUnavailable, DeadlineExceeded)):
+            return True
+    except ImportError:
+        pass
+    text = str(exc)
+    return any(
+        marker in text
+        for marker in (
+            "500 Internal",
+            "503 Service",
+            "504 Deadline",
+            "Internal error encountered",
+        )
+    )
 
 
 def _is_daily_quota(exc: Exception) -> bool:
