@@ -18,18 +18,26 @@ on:
     # minimum interval on a high-frequency schedule. Polling harder bought
     # nothing and plausibly caused the throttling.
     #
-    # These six sit ~2.5h apart (above that floor) and land inside the
-    # 9am-11pm Eastern posting window in BOTH EDT and EST, since cron is always
-    # UTC. Six opportunities for three posts, so a dropped or failed trigger
-    # costs redundancy rather than the day's post. cloud-tick itself decides
-    # whether to post (window / daily quota / min_gap) and jitters the publish
-    # time, so fixed triggers do not mean identical post times every day.
+    # These sit ~2h10m apart (above that floor) and land inside the 9am-11pm
+    # Eastern posting window in BOTH EDT and EST, since cron is always UTC.
+    # Five opportunities for three posts, so a dropped or late trigger costs
+    # redundancy rather than the day's post. cloud-tick itself decides whether
+    # to post (window / daily quota / min_gap) and jitters the publish time, so
+    # fixed triggers do not mean identical post times every day.
+    #
+    # All five sit in the FIRST half of the window on purpose. GitHub does not
+    # just skip triggers, it fires them hours late: on 2026-09-29 the 21:40 and
+    # 02:40 UTC entries actually ran at 05:38 and 08:58 UTC, three to six hours
+    # behind, by which point they were 01:42 and 05:02 Eastern - outside the
+    # 9am-11pm posting window, so cloud-tick correctly did nothing and two of
+    # the day's four runs were wasted. Entries late in the window cannot
+    # survive that; entries early in it can. The latest here is 18:50 Eastern,
+    # so even a four-hour delay still lands inside the window.
     - cron: "10 14 * * *"   # 10:10 EDT / 09:10 EST
-    - cron: "40 16 * * *"   # 12:40 EDT / 11:40 EST
-    - cron: "10 19 * * *"   # 15:10 EDT / 14:10 EST
-    - cron: "40 21 * * *"   # 17:40 EDT / 16:40 EST
-    - cron: "10 0 * * *"    # 20:10 EDT / 19:10 EST
-    - cron: "40 2 * * *"    # 22:40 EDT / 21:40 EST
+    - cron: "20 16 * * *"   # 12:20 EDT / 11:20 EST
+    - cron: "30 18 * * *"   # 14:30 EDT / 13:30 EST
+    - cron: "40 20 * * *"   # 16:40 EDT / 15:40 EST
+    - cron: "50 22 * * *"   # 18:50 EDT / 17:50 EST
   workflow_dispatch: {}
 
 concurrency:
