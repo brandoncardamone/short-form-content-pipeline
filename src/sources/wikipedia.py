@@ -18,6 +18,7 @@ Renders through the caption format (no card), so it does not have to pretend to
 be a Reddit post.
 """
 
+import hashlib
 import json
 import logging
 import random
@@ -37,6 +38,14 @@ logger = logging.getLogger(__name__)
 
 FEED_BASE = "https://api.wikimedia.org/feed/v1/wikipedia/en/onthisday/events"
 USER_AGENT = "short-form-content-pipeline/1.0 (personal project)"
+# Hard ceiling on LLM calls per generate_wiki_script(). The free tier allows 20
+# generate_content requests per DAY across the whole pipeline, so an unbounded
+# loop here is not a slow path, it is a same-minute outage: the first version
+# called the LLM once per candidate event inside a retry loop, i.e. up to
+# 3 x ~126 = ~378 requests in a single run. Rejecting an event costs nothing
+# (it is a string check against the source text), so only actual LLM attempts
+# are counted against this.
+MAX_LLM_CALLS = 3
 MAX_RETRIES = 3
 FETCH_DAYS = 6          # distinct calendar days sampled per attempt
 MIN_EVENT_CHARS = 120   # a one-line stub cannot carry a 40s video
@@ -99,6 +108,20 @@ def _fetch_events(cfg) -> list[dict]:
     return events
 
 
+def _event_key(ev: dict, source_text: str) -> str:
+    """Deterministic dedup key for a source event.
+
+    Used AS the script's premise, rather than the LLM's own one-line summary.
+    That is what makes the pre-LLM `premise_exists` check meaningful: keyed on
+    the source, an event already turned into a video is skipped for free,
+    instead of being rewritten (one request) and only then rejected by the
+    duplicate check. The LLM's summary bought nothing here - premise exists to
+    deduplicate, and the source event identifies the content exactly.
+    """
+    digest = hashlib.sha256(source_text.encode("utf-8")).hexdigest()[:16]
+    return f"wiki:{ev.get('year')}:{digest}"
+
+
 def _is_flagged(text: str) -> bool:
     low = text.lower()
     return any(term in low for term in EXCLUDED_TERMS)
@@ -111,6 +134,7 @@ def generate_wiki_script(cfg, db_conn) -> Script:
     client = load_client(cfg)
     n_beats = _target_beats(cfg)
 
+    calls = 0
     for attempt in range(1, MAX_RETRIES + 1):
         events = _fetch_events(cfg)
         if not events:
@@ -118,34 +142,43 @@ def generate_wiki_script(cfg, db_conn) -> Script:
 
         for ev in events:
             source_text = ev["text"].strip()
+            # Both of these reject an event for free - no request is spent.
             if _is_flagged(source_text):
                 continue
-            if db_conn is not None and premise_exists(db_conn, f"wiki:{ev['year']}:{source_text[:80]}"):
+            key = _event_key(ev, source_text)
+            if db_conn is not None and premise_exists(db_conn, key):
                 continue
+
+            if calls >= MAX_LLM_CALLS:
+                raise RuntimeError(
+                    f"Gave up after {calls} LLM calls without a usable Wikipedia script. "
+                    "Not retrying further: the free tier allows only 20 requests a day "
+                    "across the whole pipeline."
+                )
 
             prompt = PROMPT.format(year=ev["year"], text=source_text, beats=n_beats)
+            calls += 1
             raw = client.complete(prompt, temperature=0.85)
             try:
-                data = extract_json(raw)
-                script = _parse(data, cfg, ev)
+                script = _parse(extract_json(raw), cfg, ev, key)
             except (json.JSONDecodeError, ValueError, KeyError) as e:
-                logger.warning("Wikipedia script parse failed: %s", e)
+                logger.warning("Wikipedia script parse failed (call %d/%d): %s",
+                               calls, MAX_LLM_CALLS, e)
                 continue
 
-            if db_conn is not None and premise_exists(db_conn, script.premise):
-                logger.info("Duplicate premise, trying another event")
-                continue
-
-            logger.info("Wikipedia script accepted: %r (year %s, %d beats)",
-                        script.title, ev["year"], len(script.beats))
+            logger.info("Wikipedia script accepted: %r (year %s, %d beats, %d call(s))",
+                        script.title, ev["year"], len(script.beats), calls)
             return script
 
-        logger.warning("No usable event in this pool (attempt %d/%d)", attempt, MAX_RETRIES)
+        logger.warning("No usable event in this pool (attempt %d/%d, %d call(s) spent)",
+                       attempt, MAX_RETRIES, calls)
 
-    raise RuntimeError(f"Could not build a Wikipedia script after {MAX_RETRIES} attempts")
+    raise RuntimeError(
+        f"Could not build a Wikipedia script after {MAX_RETRIES} pools and {calls} LLM calls"
+    )
 
 
-def _parse(data: dict, cfg, ev: dict) -> Script:
+def _parse(data: dict, cfg, ev: dict, premise: Optional[str] = None) -> Script:
     voice = cfg.tts.voices.a
     raw_beats = [b for b in (data.get("beats") or []) if str(b).strip()]
     if len(raw_beats) < 4:
@@ -165,5 +198,6 @@ def _parse(data: dict, cfg, ev: dict) -> Script:
         hook=hook,
         tags=tags,
         caption=caption,
-        premise=str(data["premise"]),
+        # Keyed on the source event, not the model's summary - see _event_key.
+        premise=premise or str(data["premise"]),
     )
