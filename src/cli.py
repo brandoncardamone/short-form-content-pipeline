@@ -891,14 +891,23 @@ def cmd_monitor(args):
     automatically instead of noticing a reach drop-off by accident.
 
     Checks: token still valid (a broken/revoked token is the #1 way these
-    pipelines die silently), and follower/post-count trend. Does NOT check
-    engagement/reach — that needs instagram_manage_insights (not yet granted)
-    and, for Instagram Reels specifically, is gated behind 1,000 followers by
-    the platform regardless of permissions. See project memory for the full
-    reasoning; this will need extending once those are cleared.
+    pipelines die silently), follower/post-count trend, and per-post
+    engagement.
+
+    REACH is still unavailable: /insights needs instagram_manage_insights,
+    which this app does not have — confirmed live 2026-09-29 with "(#10)
+    Application does not have permission for this action" — and Reels insights
+    are additionally gated behind 1,000 followers. Likes and comments come off
+    the media object instead, need no extra permission, and are the signal
+    distribution actually keys on: a post that gets impressions but no
+    engagement stops being shown, which is exactly the shape of this account's
+    problem. Samples are appended, not overwritten, so the trend is visible —
+    a single snapshot cannot tell you whether a content change worked.
     """
-    from src.db import record_account_metrics, latest_account_metrics
+    from src.db import (record_account_metrics, latest_account_metrics,
+                        record_post_metrics, engagement_by_format)
     from src.publish.instagram import check_account_health as ig_health
+    from src.publish.instagram import fetch_post_metrics
     from src.publish.tiktok import check_account_health as tt_health
 
     cfg = _cfg()
@@ -935,6 +944,32 @@ def cmd_monitor(args):
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
+
+    # Per-post engagement. Wrapped because a metrics failure must never make
+    # `monitor` look like a token problem — the token check above is the part
+    # that matters operationally.
+    try:
+        rows = fetch_post_metrics(cfg, conn)
+    except Exception as e:
+        print(f"post metrics: unavailable ({e})")
+        return
+
+    if not rows:
+        return
+
+    n = record_post_metrics(conn, rows)
+    likes = sum(r["like_count"] or 0 for r in rows)
+    comments = sum(r["comments_count"] or 0 for r in rows)
+    print(f"engagement: {likes} likes, {comments} comments across {n} recent posts "
+          f"(avg {likes / n:.2f} likes/post)")
+
+    by_fmt = engagement_by_format(conn)
+    if by_fmt:
+        print("  by format:")
+        for r in by_fmt:
+            print(f"    {r['content_format']:14s} posts={r['posts']:3d} "
+                  f"likes={r['likes'] or 0:4d} comments={r['comments'] or 0:3d} "
+                  f"avg={r['avg_likes'] or 0:.2f}")
 
 def main():
     parser = argparse.ArgumentParser(description="Short-form content pipeline")

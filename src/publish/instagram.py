@@ -302,6 +302,50 @@ def token_status(cfg, conn) -> Optional[dict]:
     return {"configured": bool(_current_token(cfg, conn)), "expires_at": None}
 
 
+def fetch_post_metrics(cfg, conn, limit: int = 50) -> list[dict]:
+    """Per-post likes/comments for recent posts.
+
+    Deliberately reads the media object, not /insights. Insights would give
+    reach and plays but needs instagram_manage_insights, which this app does
+    not have - confirmed live 2026-09-29, "(#10) Application does not have
+    permission for this action". like_count/comments_count need no extra
+    permission and are available today, and they are the signal distribution
+    actually keys on: a post with views but no engagement stops being shown.
+    """
+    if not cfg.instagram_access_token or not cfg.instagram_user_id:
+        return []
+
+    token = _current_token(cfg, conn)
+    resp = requests.get(
+        f"{GRAPH_BASE}/{cfg.instagram_user_id}/media",
+        params={
+            "fields": "id,like_count,comments_count,timestamp",
+            "limit": limit,
+            "access_token": token,
+        },
+        timeout=25,
+    )
+    _raise_if_auth_error(resp)
+    resp.raise_for_status()
+
+    by_ig = {
+        row["instagram_id"]: row["id"]
+        for row in conn.execute(
+            "SELECT id, instagram_id FROM videos WHERE instagram_id IS NOT NULL"
+        )
+    }
+    out = []
+    for m in resp.json().get("data", []):
+        out.append({
+            "instagram_id": m["id"],
+            "video_id": by_ig.get(m["id"]),
+            "like_count": m.get("like_count"),
+            "comments_count": m.get("comments_count"),
+            "timestamp": m.get("timestamp"),
+        })
+    return out
+
+
 def check_account_health(cfg, conn) -> dict:
     """
     Lightweight account check for the `monitor` CLI subcommand — does NOT use

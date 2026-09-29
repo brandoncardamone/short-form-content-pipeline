@@ -64,6 +64,24 @@ CREATE TABLE IF NOT EXISTS schedule_slots (
   created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_schedule_date ON schedule_slots(date);
+
+-- Per-post engagement over time. like_count/comments_count come from the media
+-- object itself, NOT /insights - insights needs instagram_manage_insights,
+-- which this app does not have (confirmed live 2026-09-29: "(#10) Application
+-- does not have permission for this action"). So reach/impressions are not
+-- available, but likes and comments are, and they are the signal that actually
+-- drives distribution. One row per post per check, so this is a time series:
+-- the point is to see whether a content change moves engagement, which a single
+-- snapshot cannot show.
+CREATE TABLE IF NOT EXISTS post_metrics (
+  id             INTEGER PRIMARY KEY,
+  instagram_id   TEXT NOT NULL,
+  video_id       INTEGER,
+  fetched_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  like_count     INTEGER,
+  comments_count INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_post_metrics_ig ON post_metrics(instagram_id);
 """
 
 
@@ -90,6 +108,43 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     _migrate(conn)
     return conn
+
+
+def record_post_metrics(conn: sqlite3.Connection, rows: list[dict]) -> int:
+    """Append one engagement sample per post. Appends rather than upserts so the
+    trend over time is preserved."""
+    n = 0
+    for r in rows:
+        conn.execute(
+            """INSERT INTO post_metrics (instagram_id, video_id, like_count, comments_count)
+               VALUES (?, ?, ?, ?)""",
+            (r["instagram_id"], r.get("video_id"),
+             r.get("like_count"), r.get("comments_count")),
+        )
+        n += 1
+    return n
+
+
+def engagement_by_format(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Latest engagement sample per post, grouped by content format."""
+    return list(conn.execute("""
+        WITH latest AS (
+          SELECT pm.instagram_id, pm.like_count, pm.comments_count,
+                 ROW_NUMBER() OVER (PARTITION BY pm.instagram_id
+                                    ORDER BY pm.fetched_at DESC) AS rn
+          FROM post_metrics pm
+        )
+        SELECT v.content_format AS content_format,
+               COUNT(*) AS posts,
+               SUM(l.like_count) AS likes,
+               SUM(l.comments_count) AS comments,
+               ROUND(AVG(l.like_count), 2) AS avg_likes
+        FROM latest l
+        JOIN videos v ON v.instagram_id = l.instagram_id
+        WHERE l.rn = 1
+        GROUP BY v.content_format
+        ORDER BY avg_likes DESC
+    """))
 
 
 def premise_hash(premise: str) -> str:
