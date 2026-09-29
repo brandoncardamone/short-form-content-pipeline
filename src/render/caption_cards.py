@@ -30,6 +30,14 @@ from src.render.cards import Frame, FRAME_W, FRAME_H
 
 HERE = Path(__file__).parent
 
+# Measured, not guessed: video 98 was 19 beats and came out at 29.30s, i.e.
+# 1.54s per beat including the inter-beat gap. The first estimate here was
+# 2.2s, which made caption videos land at ~29s - below video.target_duration_min
+# - because the generators derive their beat count from it. Re-measure if the
+# TTS voice, tts.speed or tts.gap_ms changes, the same way WORDS_PER_SEC in
+# sources/reddit.py has to be re-measured.
+SECONDS_PER_BEAT = 1.55
+
 MAX_FONT_PX = 104
 MIN_FONT_PX = 46
 FONT_STEP_PX = 6
@@ -106,3 +114,10 @@ class CaptionRenderer:
             browser.close()
 
         return frames
+
+def target_beats(cfg) -> int:
+    """Beat count that lands inside video.target_duration_*, at the measured
+    caption pacing. Shared by every caption-format generator so they cannot
+    drift apart."""
+    mid = (cfg.video.target_duration_min + cfg.video.target_duration_max) / 2
+    return max(8, round(mid / SECONDS_PER_BEAT))

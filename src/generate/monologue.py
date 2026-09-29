@@ -20,7 +20,7 @@ from src.schema import Script, Beat
 from src.generate.llm import load_client, extract_json
 from src.captions import build_caption
 from src.db import premise_exists
-from src.render.caption_cards import strip_emphasis
+from src.render.caption_cards import strip_emphasis, target_beats as _target_beats
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +89,6 @@ Output valid JSON only, no markdown fences:
 }}"""
 
 
-def _target_beats(cfg) -> int:
-    """Caption beats are short; roughly 2.2s each."""
-    mid = (cfg.video.target_duration_min + cfg.video.target_duration_max) / 2
-    return max(8, round(mid / 2.2))
 
 
 def generate_monologue_script(cfg, db_conn) -> Script:
