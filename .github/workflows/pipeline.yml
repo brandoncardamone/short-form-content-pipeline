@@ -80,20 +80,24 @@ jobs:
         # than reimplementing the checks, so the two cannot drift; every heavy
         # import in src.cli is function-local, which is what makes that cheap.
         # It fails OPEN, because a wrongly-skipped run costs a post while a
-        # wrongly-started one costs four minutes.
+        # wrongly-started one costs four minutes. Note the gated steps test
+        # `!= 'false'`, not `== 'true'`: if this STEP itself dies (a bad pip
+        # install, say) the output is unset, and testing for 'true' would then
+        # skip every expensive step and silently stop the pipeline posting
+        # altogether. Unset has to mean proceed.
         run: |
           python -m pip install --quiet pyyaml pydantic python-dotenv
           python scripts/should_run.py
 
       - name: Cache pip packages
-        if: steps.gate.outputs.proceed == 'true'
+        if: steps.gate.outputs.proceed != 'false'
         uses: actions/cache@v6
         with:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
       - name: Cache Chatterbox model weights
-        if: steps.gate.outputs.proceed == 'true'
+        if: steps.gate.outputs.proceed != 'false'
         uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
@@ -101,7 +105,7 @@ jobs:
 
       - name: Cache downloaded pipeline assets
         id: cache-assets
-        if: steps.gate.outputs.proceed == 'true'
+        if: steps.gate.outputs.proceed != 'false'
         uses: actions/cache@v6
         with:
           path: |
@@ -115,7 +119,7 @@ jobs:
       # of Git LFS — they total ~1.65GB, over LFS's 1GB free storage tier.
       # Only runs on a cache miss (first run, or if the cache is ever evicted).
       - name: Download pipeline assets from release
-        if: steps.gate.outputs.proceed == 'true' && steps.cache-assets.outputs.cache-hit != 'true'
+        if: steps.gate.outputs.proceed != 'false' && steps.cache-assets.outputs.cache-hit != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -128,7 +132,7 @@ jobs:
           mv /tmp/release-assets/soft_ambient.wav assets/music/
 
       - name: Install system dependencies
-        if: steps.gate.outputs.proceed == 'true'
+        if: steps.gate.outputs.proceed != 'false'
         run: |
           sudo apt-get update
           # fonts-lato: the caption format pins Lato rather than inheriting the
@@ -138,18 +142,18 @@ jobs:
           sudo apt-get install -y ffmpeg fonts-lato
 
       - name: Install Python dependencies
-        if: steps.gate.outputs.proceed == 'true'
+        if: steps.gate.outputs.proceed != 'false'
         run: |
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -r requirements.txt
 
       - name: Install Playwright's Chromium
-        if: steps.gate.outputs.proceed == 'true'
+        if: steps.gate.outputs.proceed != 'false'
         run: .venv/bin/playwright install --with-deps chromium
 
       - name: Run pipeline tick
-        if: steps.gate.outputs.proceed == 'true'
+        if: steps.gate.outputs.proceed != 'false'
         env:
           MOBILE_SYNC_DIR: ""
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
