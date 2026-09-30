@@ -108,11 +108,16 @@ def upload_draft(mp4_path: Path, caption: str, cfg, conn=None, cover_ms: int = 1
     """
     Publish a video to TikTok. Returns the publish_id. Dispatches on
     cfg.tiktok.post_mode:
-      - "direct" (default): caption/hashtags apply automatically, video goes
-        live immediately at whatever privacy_level TikTok allows (SELF_ONLY
-        while this app is unaudited — the account owner can manually flip an
-        individual post's privacy to "Everyone" afterward; this does NOT
-        require completing TikTok's app review, confirmed working 2026-09-02).
+      - "direct": caption/hashtags apply automatically and the video goes live
+        immediately. BLOCKED while the app is unaudited, and blocked at EVERY
+        privacy level, not just public. Re-probed 2026-09-30: init returns
+        HTTP 403 unaudited_client_can_only_post_to_private_accounts for
+        PUBLIC_TO_EVERYONE, MUTUAL_FOLLOW_FRIENDS *and* SELF_ONLY. The error
+        name misleads - it is about the ACCOUNT being private at the moment of
+        posting, which no API can toggle, not about the post's privacy level.
+        An earlier note here claimed this path was "confirmed working
+        2026-09-02" at SELF_ONLY; that is not reproducible and should not be
+        relied on.
       - "inbox": human finishes posting in the TikTok app. The API-sent
         caption is structurally ignored by this flow — confirmed against
         TikTok's own design (independent third-party tools hit the same wall),
@@ -131,10 +136,13 @@ def upload_draft(mp4_path: Path, caption: str, cfg, conn=None, cover_ms: int = 1
     if mode == "direct":
         creator_info = query_creator_info(token)
         privacy_options = creator_info.get("privacy_level_options", ["SELF_ONLY"])
-        # Prefer full public visibility — contrary to docs describing unaudited
-        # apps as forced to SELF_ONLY, PUBLIC_TO_EVERYONE has been observed
-        # available in privacy_level_options for this app (confirmed live,
-        # 2026-09-02). Fall back gracefully if it's ever not offered.
+        # NOTE: privacy_level_options is NOT an audit-status signal. It has
+        # listed PUBLIC_TO_EVERYONE since 2026-09-02 — before the app was even
+        # submitted for review — while every direct-post init still 403s with
+        # unaudited_client_can_only_post_to_private_accounts. Do not infer from
+        # this list that direct posting has become available; probe the init
+        # endpoint instead (it fails before any bytes are uploaded, so it costs
+        # nothing and posts nothing).
         privacy_level = "PUBLIC_TO_EVERYONE" if "PUBLIC_TO_EVERYONE" in privacy_options else privacy_options[0]
         init_path = "post/publish/video/init/"
         post_info = {

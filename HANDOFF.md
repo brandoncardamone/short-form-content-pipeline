@@ -623,6 +623,42 @@ then **bump the `actions/cache` key** (`pipeline-assets-v1` -> `-v2`). Without
 the key bump the runner keeps restoring the cached old set and never downloads
 the new ones.
 
+### TikTok audit: still pending at 27 days, and how to test it without posting
+
+Re-probed 2026-09-30 (submitted 2026-09-03, so 27 days against the 2-weeks-max
+their docs suggest). **Still unaudited.** Direct posting is blocked at *every*
+privacy level:
+
+| privacy_level | init result |
+|---|---|
+| PUBLIC_TO_EVERYONE | 403 `unaudited_client_can_only_post_to_private_accounts` |
+| MUTUAL_FOLLOW_FRIENDS | 403, same |
+| SELF_ONLY | 403, same |
+
+**The error name misleads.** It is not about the post's privacy level — it is
+about the ACCOUNT being set to private at the moment of posting, which no API
+can toggle. So "just post privately and flip it afterwards" is not a workaround;
+the whole account would have to be private.
+
+**`privacy_level_options` is not an audit-status signal.** `creator_info` has
+listed `PUBLIC_TO_EVERYONE` since 2026-09-02, *before* the app was submitted,
+and still does while every direct post 403s. A stale code comment inferring
+otherwise led to a wrong "the review came through" conclusion on 2026-09-29.
+
+**To check audit status safely, probe the init endpoint.** It rejects before any
+bytes are uploaded, so it costs nothing and posts nothing:
+
+```
+POST {API_BASE}/post/publish/video/init/  with privacy_level PUBLIC_TO_EVERYONE
+  403 unaudited_... -> still unaudited
+  200 + publish_id  -> approved; abandon the publish_id, it expires unused
+```
+
+Until it clears, TikTok's only working path is `post_mode: inbox`, whose
+API-sent caption is structurally ignored — so each video needs finishing by
+hand in the app. `schedule.platform` is `instagram`, so nothing reaches TikTok
+at all today.
+
 ### Monitoring
 
 `cli.py monitor` checks token validity (catches a revoked/broken token
@@ -669,10 +705,11 @@ these without re-litigating why:
 ## Pending / next steps
 
 1. **TikTok production review is still undecided** — submitted 2026-09-03, so
-   24 days as of 2026-09-27, past the 2-weeks-max their docs suggest. Worth
-   chasing rather than continuing to wait. `tiktok.post_mode` is still `inbox`
-   and `schedule.platform` is still `instagram`, so nothing posts to TikTok at
-   all right now.
+   27 days as of 2026-09-30, well past the 2-weeks-max their docs suggest, and
+   re-probed that day to confirm (see the TikTok audit section above). Check
+   the developer portal for a rejection or a request for more information
+   rather than assuming it is still queued. `tiktok.post_mode` is `inbox` and
+   `schedule.platform` is `instagram`, so nothing reaches TikTok at all.
 2. Once approved: flip `tiktok.post_mode` to `direct` **and**
    `schedule.platform` to `both`, then retest one video. Both code paths are
    already written and live-tested.
