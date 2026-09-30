@@ -7,6 +7,8 @@ keeps the engine interface simple and gives ffmpeg full quality control over
 the tempo change.
 """
 
+import logging
+import random
 import subprocess
 from pathlib import Path
 
@@ -14,9 +16,46 @@ from src.schema import Script, RenderedBeat
 from src.config import Config
 from src.tts.base import load_engine
 
+logger = logging.getLogger(__name__)
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+
+def pick_delivery(cfg) -> dict:
+    """Randomise the read once per video.
+
+    Speed, expressiveness and reference-adherence all move together within
+    configured jitter bands. Bounds are hard-clamped: atempo below ~0.8 sounds
+    sluggish and above ~1.6 starts chewing consonants, and Chatterbox degrades
+    outside roughly 0.3-1.0 on both of its knobs.
+
+    Note this is NOT pitch shifting. Post-processing pitch shifts were tried
+    (both naive and formant-preserving) and made quality measurably worse - see
+    HANDOFF.md. Varying the generation parameters changes the performance
+    rather than resampling the output, which is why it does not degrade.
+    """
+    t = cfg.tts
+    return {
+        "speed": round(_clamp(random.uniform(t.speed - t.speed_jitter,
+                                             t.speed + t.speed_jitter), 0.8, 1.6), 3),
+        "exaggeration": round(_clamp(random.uniform(t.exaggeration - t.exaggeration_jitter,
+                                                    t.exaggeration + t.exaggeration_jitter),
+                                     0.3, 1.0), 3),
+        "cfg_weight": round(_clamp(random.uniform(t.cfg_weight - t.cfg_weight_jitter,
+                                                  t.cfg_weight + t.cfg_weight_jitter),
+                                   0.2, 0.9), 3),
+    }
+
 
 def run_tts(script: Script, work_dir: Path, cfg: Config) -> list[RenderedBeat]:
     engine = load_engine(cfg.tts.engine)
+    delivery = pick_delivery(cfg)
+    engine.set_delivery(delivery)
+    logger.info("Delivery for this video: speed=%.3f exaggeration=%.3f cfg_weight=%.3f",
+                delivery["speed"], delivery["exaggeration"], delivery["cfg_weight"])
+
     work_dir.mkdir(parents=True, exist_ok=True)
     rendered: list[RenderedBeat] = []
 
@@ -26,8 +65,8 @@ def run_tts(script: Script, work_dir: Path, cfg: Config) -> list[RenderedBeat]:
 
         engine.synthesize(beat.text, beat.voice, raw_path)
 
-        if abs(cfg.tts.speed - 1.0) > 0.01:
-            _apply_tempo(raw_path, final_path, cfg.tts.speed)
+        if abs(delivery["speed"] - 1.0) > 0.01:
+            _apply_tempo(raw_path, final_path, delivery["speed"])
             raw_path.unlink()
         else:
             raw_path.rename(final_path)

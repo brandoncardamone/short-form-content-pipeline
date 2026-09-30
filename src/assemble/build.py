@@ -134,9 +134,16 @@ def build(
 
     # Card frames are full 1080x1920 screenshots (card position is baked in
     # via CSS), so the overlay is a plain full-frame composite.
+    look = _pick_background_look()
+    logger.info("Background look: flip=%s zoom=%.2f framing=(%.2f, %.2f)",
+                look["flip"], look["zoom"], look["fx"], look["fy"])
+    flip = "hflip," if look["flip"] else ""
+    zoom_w, zoom_h = int(FRAME_W * look["zoom"]), int(FRAME_H * look["zoom"])
     filt = (
-        f"[0:v]scale={FRAME_W}:{FRAME_H}:force_original_aspect_ratio=increase,"
-        f"crop={FRAME_W}:{FRAME_H},fps={cfg.video.fps}[bg];"
+        f"[0:v]{flip}scale={zoom_w}:{zoom_h}:force_original_aspect_ratio=increase,"
+        f"crop=w={FRAME_W}:h={FRAME_H}"
+        f":x=(in_w-out_w)*{look['fx']:.3f}:y=(in_h-out_h)*{look['fy']:.3f},"
+        f"fps={cfg.video.fps}[bg];"
         f"[1:v]format=rgba[card];"
         f"[bg][card]overlay=x=0:y=0:shortest=1[v]"
     )
@@ -214,6 +221,33 @@ def _background_start_offset(background: Path, total_s: float, safety_margin_s: 
 #      driven). A fixed 2s GOP is what IG's segmenter expects.
 #   4. Colour metadata was unset, inherited from whatever the source gameplay
 #      clip carried. Tagged bt709 explicitly.
+
+
+def _pick_background_look() -> dict:
+    """Randomise how the background is framed, per video.
+
+    There are only two distinct background clips (subway surfers.mp4 and
+    videoplayback.mp4 are byte-identical), and one of them is 193s long, so
+    without this most videos show recognisably the same footage. Mirroring,
+    a slight zoom and an off-centre crop are enough to stop consecutive videos
+    reading as the same clip.
+
+    Deliberately spatial only. Retiming the background (setpts) was considered
+    and rejected: the input is cut to exactly the video's duration, so speeding
+    it up leaves the background short, overlay shortest=1 truncates the video,
+    and _verify_output then fails the build. These transforms cannot affect
+    duration at all.
+
+    The crop offsets are expressed against in_w/in_h so ffmpeg resolves them
+    at runtime - the scaled size is not known here, and at zoom 1.0 the slack
+    is zero and the offsets harmlessly evaluate to 0.
+    """
+    return {
+        "flip": random.random() < 0.5,
+        "zoom": round(random.uniform(1.0, 1.18), 3),
+        "fx": round(random.uniform(0.25, 0.75), 3),
+        "fy": round(random.uniform(0.25, 0.75), 3),
+    }
 
 
 def _build_cmd(

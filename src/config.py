@@ -32,6 +32,15 @@ class TTSConfig(BaseModel):
     speed: float = 1.2
     gap_ms: float = 220.0
     voices: VoicesConfig = VoicesConfig()
+    # Delivery is randomised once PER VIDEO (never per beat - that would make
+    # the narrator's voice change mid-video). Every video before 2026-09-29 was
+    # read at exactly the same speed and expressiveness, which is part of why
+    # they all sounded like the same video.
+    speed_jitter: float = 0.12          # speed becomes speed +/- this
+    exaggeration: float = 0.7           # Chatterbox: how animated the read is
+    exaggeration_jitter: float = 0.18
+    cfg_weight: float = 0.45            # Chatterbox: reference adherence vs variation
+    cfg_weight_jitter: float = 0.12
 
 
 class LLMConfig(BaseModel):

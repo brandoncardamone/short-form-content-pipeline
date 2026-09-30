@@ -20,6 +20,7 @@ Public entry point: render_script() -> list[Frame]
 """
 
 import html as _html
+import random
 import re
 from pathlib import Path
 
@@ -45,6 +46,18 @@ FONT_STEP_PX = 6
 # Generators mark emphasis by wrapping a word in *asterisks*.
 _EMPHASIS = re.compile(r"\*([^*]+)\*")
 
+# One highlight colour is drawn per video. All are picked to stay legible
+# against the black stroke over arbitrary footage - nothing dark, nothing that
+# vanishes into the white fill.
+HIGHLIGHT_COLOURS = [
+    "#FFE300",  # yellow
+    "#4CE6A1",  # mint
+    "#FF6B6B",  # coral
+    "#5EC8FF",  # sky
+    "#FFA53D",  # amber
+    "#C77DFF",  # violet
+]
+
 
 def _to_html(text: str) -> str:
     """Escape, then turn *emphasis* into a highlight span. Escaping first means
@@ -60,15 +73,19 @@ def strip_emphasis(text: str) -> str:
 
 
 class CaptionRenderer:
-    def __init__(self, outdir=Path("out")):
+    def __init__(self, outdir=Path("out"), highlight=None):
         self.css = (HERE / "caption.css").read_text()
         self.tpl = Template((HERE / "caption.html").read_text())
         self.outdir = Path(outdir)
         self.outdir.mkdir(parents=True, exist_ok=True)
+        # Fixed for the whole video: changing it between beats would read as a
+        # glitch rather than as variety.
+        self.highlight = highlight or random.choice(HIGHLIGHT_COLOURS)
 
     def _render_at(self, page, html_text: str, font_size: int):
         page.set_content(self.tpl.render(
             css=self.css, html_text=html_text, font_size=font_size,
+            highlight=self.highlight,
         ))
 
     def _fit(self, page, html_text: str) -> int:

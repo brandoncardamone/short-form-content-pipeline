@@ -51,6 +51,13 @@ class ChatterboxEngine(TTSEngine):
     def __init__(self):
         from chatterbox.tts import ChatterboxTTS
         self._model = ChatterboxTTS.from_pretrained(device="cpu")
+        # Overridden per video by run_tts via set_delivery().
+        self._exaggeration = EXAGGERATION
+        self._cfg_weight = CFG_WEIGHT
+
+    def set_delivery(self, delivery: dict) -> None:
+        self._exaggeration = float(delivery.get("exaggeration", EXAGGERATION))
+        self._cfg_weight = float(delivery.get("cfg_weight", CFG_WEIGHT))
 
     def _ref_path(self, voice: str) -> Path:
         ref = VOICE_MAP.get(voice)
@@ -68,8 +75,8 @@ class ChatterboxEngine(TTSEngine):
         wav = self._model.generate(
             text,
             audio_prompt_path=str(ref_path),
-            exaggeration=EXAGGERATION,
-            cfg_weight=CFG_WEIGHT,
+            exaggeration=self._exaggeration,
+            cfg_weight=self._cfg_weight,
         )
         out_path.parent.mkdir(parents=True, exist_ok=True)
         sf.write(str(out_path), wav.squeeze(0).numpy(), self._model.sr)

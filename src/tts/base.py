@@ -15,6 +15,16 @@ class TTSEngine(ABC):
     def synthesize(self, text: str, voice: str, out_path: Path) -> None:
         """Render text to a WAV file at out_path."""
 
+    def set_delivery(self, delivery: dict) -> None:
+        """Per-video delivery settings, applied to every beat of that video.
+
+        A no-op by default so engines that have no such controls (piper,
+        kokoro, elevenlabs) need no changes; Chatterbox overrides it. Called
+        once per video by run_tts, never per beat - varying delivery between
+        beats would change the narrator's voice mid-video.
+        """
+        return None
+
     def duration_ms(self, wav_path: Path) -> float:
         info = sf.info(str(wav_path))
         return info.duration * 1000.0
