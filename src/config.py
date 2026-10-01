@@ -46,6 +46,12 @@ class TTSConfig(BaseModel):
 class LLMConfig(BaseModel):
     provider: str = "gemini"
     model: str = "gemini-2.0-flash-exp"
+    # The free tier's daily request cap is PER MODEL
+    # (GenerateRequestsPerDayPerProjectPerModel-FreeTier), so a second model is
+    # a second allowance rather than a shared one. Exhausting one and moving to
+    # the next is what keeps the non-Reddit formats actually reaching
+    # production - see the note in config.yaml.
+    fallback_models: list[str] = []
 
 
 class CardConfig(BaseModel):

@@ -36,7 +36,7 @@ class LLMClient:
 
 
 class GeminiClient(LLMClient):
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, fallback_models=()):
         try:
             import google.generativeai as genai
         except ImportError as e:
@@ -45,11 +45,44 @@ class GeminiClient(LLMClient):
             ) from e
         genai.configure(api_key=api_key)
         self._genai = genai
-        self._model_name = model
+        # Ordered, de-duplicated. The daily cap is per model, so each entry is
+        # a fresh allowance; _idx only moves forward, so once a model's daily
+        # cap is hit it is not retried for the life of this client.
+        seen, models = set(), []
+        for m in [model, *fallback_models]:
+            if m and m not in seen:
+                seen.add(m)
+                models.append(m)
+        self._models = models
+        self._idx = 0
+
+    @property
+    def _model_name(self) -> str:
+        return self._models[self._idx]
 
     def complete(self, prompt: str, temperature: float = 0.9) -> str:
+        """Try each configured model in turn, moving on only when one's DAILY
+        cap is gone. Per-minute limits and transient 5xx are handled within a
+        model by _complete_one, since those clear on their own - switching
+        models for those would waste the next model's allowance too."""
+        while True:
+            try:
+                return self._complete_one(self._model_name, prompt, temperature)
+            except Exception as e:
+                if _is_daily_quota(e) and self._idx + 1 < len(self._models):
+                    exhausted = self._model_name
+                    self._idx += 1
+                    logger.warning(
+                        "Gemini daily cap reached on %s - switching to %s "
+                        "(the cap is per model, so this is a fresh allowance)",
+                        exhausted, self._model_name,
+                    )
+                    continue
+                raise
+
+    def _complete_one(self, model_name: str, prompt: str, temperature: float) -> str:
         model = self._genai.GenerativeModel(
-            self._model_name,
+            model_name,
             generation_config=self._genai.types.GenerationConfig(
                 temperature=temperature,
                 response_mime_type="application/json",
@@ -64,8 +97,10 @@ class GeminiClient(LLMClient):
                     # A per-day cap will not clear by waiting a minute — only
                     # the per-minute one will, so do not burn the run's clock.
                     if _is_daily_quota(e):
-                        logger.error(
-                            "Gemini daily free-tier quota is exhausted — not retrying"
+                        # Raised so complete() can move to the next model; it
+                        # only becomes fatal once every model is exhausted.
+                        logger.warning(
+                            "Gemini daily free-tier quota exhausted on %s", model_name
                         )
                         raise
                     wait_s = RATE_LIMIT_SLEEP_S
@@ -141,7 +176,11 @@ def load_client(cfg) -> LLMClient:
             raise EnvironmentError(
                 "GEMINI_API_KEY is not set. Add it to .env or the environment."
             )
-        return GeminiClient(api_key=cfg.gemini_api_key, model=cfg.llm.model)
+        return GeminiClient(
+            api_key=cfg.gemini_api_key,
+            model=cfg.llm.model,
+            fallback_models=getattr(cfg.llm, "fallback_models", []),
+        )
     raise ValueError(f"Unknown LLM provider: {provider!r}. Supported: gemini")
 
 

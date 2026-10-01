@@ -21,6 +21,16 @@ tts:
 
 llm:
   provider: gemini
+  # Tried in order. The free tier's daily request cap is PER MODEL
+  # (GenerateRequestsPerDayPerProjectPerModel-FreeTier, value 20), so each
+  # entry here is a separate 20, not a shared one. This is load-bearing, not an
+  # optimisation: with a single model the cap was being hit by early afternoon,
+  # every non-Reddit format then fell back to reddit_story, and 7 of the 10
+  # videos after the "content variety" work were still Reddit stories. The
+  # variety was not reaching production at all.
+  fallback_models:
+    - gemini-3.8-flash
+    - gemini-3.1-flash-lite
   model: gemini-3.6-flash   # gemini-2.5-flash no longer available to this account.
                              # IMPORTANT: this model is itself capped at 20 requests/DAY on the
                              # free tier (confirmed live 2026-09-28 by exhausting it:
