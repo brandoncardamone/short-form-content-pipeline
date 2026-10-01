@@ -66,7 +66,14 @@ tiktok:
                               # (needs TikTok app review — see project memory for submission status)
 
 schedule:
-  posts_per_day: 3            # tunable — start conservative, raise once quality/reach is verified
+  # Dropped 3 -> 1 on 2026-10-01. 75 posts at ~0.4 likes each had taught
+  # Instagram that this account's content does not engage, and that is an
+  # account-level signal, not just a per-post one. One genuinely varied post a
+  # day is both a better test and a better signal than three near-identical
+  # ones, and it means each day's post can use the best format rather than
+  # whatever the LLM quota happens to allow. Raise again only once engagement
+  # has actually moved - see the engagement tracker in `monitor`.
+  posts_per_day: 1
   window_start_hour: 9        # local time, 24h clock
   window_end_hour: 23
   platform: instagram          # both | instagram | tiktok — set to instagram-only 2026-09-03

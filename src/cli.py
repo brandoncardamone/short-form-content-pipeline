@@ -36,6 +36,19 @@ def _cfg():
     return load_config()
 
 
+def _apply_profile(args) -> None:
+    """--profile sets PROFILE before any config is loaded.
+
+    An env var rather than threading a parameter through every command: config
+    is a process-wide singleton here, and the workflow sets PROFILE directly
+    for scheduled runs, so both paths end up in the same place.
+    """
+    import os
+    profile = getattr(args, "profile", None)
+    if profile:
+        os.environ["PROFILE"] = profile
+
+
 def _db(cfg):
     from src.db import init_db
     return init_db(Path(cfg.output.db_path))
@@ -973,6 +986,14 @@ def cmd_monitor(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Short-form content pipeline")
+    # Global, so it works on every subcommand. Must be applied before any
+    # config is read - see _apply_profile.
+    parser.add_argument(
+        "--profile", default=None,
+        help="Account profile to run as. Default 'main' uses config.yaml; any "
+             "other NAME uses config.NAME.yaml, its own database, and "
+             "credentials suffixed _NAME (falling back to the shared ones).",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("generate", help="Generate a new script via LLM")
@@ -1003,6 +1024,7 @@ def main():
     sub.add_parser("monitor", help="Check token health + follower/post trend for both platforms")
 
     args = parser.parse_args()
+    _apply_profile(args)
     dispatch = {
         "generate":  cmd_generate,
         "tts":       cmd_tts,

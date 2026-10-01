@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).parent.parent
 
+DEFAULT_PROFILE = "main"
+
 
 class VideoConfig(BaseModel):
     width: int = 1080
@@ -192,6 +194,39 @@ class Config(BaseModel):
 _config: Optional[Config] = None
 
 
+def profile_name() -> str:
+    """Which account this process is running as.
+
+    One codebase, several accounts. A profile selects a config file, its own
+    database (via output.db_path in that file) and its own credentials, so a
+    second account is not a second checkout to keep in sync. Set with
+    --profile on the CLI or the PROFILE env var; the default profile is the
+    original account and behaves exactly as before.
+    """
+    return os.getenv("PROFILE", "").strip() or DEFAULT_PROFILE
+
+
+def config_path_for(profile: str) -> Path:
+    """config.yaml for the default profile, config.<profile>.yaml otherwise."""
+    if profile == DEFAULT_PROFILE:
+        return ROOT / "config.yaml"
+    return ROOT / f"config.{profile}.yaml"
+
+
+def _secret(name: str, profile: str) -> Optional[str]:
+    """Per-profile secret with a fallback to the shared one.
+
+    Looks for NAME_<PROFILE> first, then NAME. So a second account sets
+    INSTAGRAM_ACCESS_TOKEN_EDU while still sharing GEMINI_API_KEY, without
+    needing every variable duplicated.
+    """
+    if profile != DEFAULT_PROFILE:
+        scoped = os.getenv(f"{name}_{profile.upper()}")
+        if scoped:
+            return scoped
+    return os.getenv(name)
+
+
 def load_config(config_path: Optional[Path] = None) -> Config:
     global _config
     if _config is not None:
@@ -199,11 +234,17 @@ def load_config(config_path: Optional[Path] = None) -> Config:
 
     load_dotenv(ROOT / ".env")
 
+    profile = profile_name()
     data: dict = {}
-    path = config_path or ROOT / "config.yaml"
+    path = config_path or config_path_for(profile)
     if path.exists():
         with open(path) as f:
             data = yaml.safe_load(f) or {}
+    elif profile != DEFAULT_PROFILE:
+        raise FileNotFoundError(
+            f"No config for profile {profile!r} at {path}. "
+            f"Create it (copy config.yaml and give it its own output.db_path)."
+        )
 
     # Explicit override for a host where the configured OneDrive/Dropbox path
     # in config.yaml doesn't exist (e.g. the GitHub Actions runner — see
@@ -214,19 +255,19 @@ def load_config(config_path: Optional[Path] = None) -> Config:
         data.setdefault("output", {})["mobile_sync_dir"] = os.environ["MOBILE_SYNC_DIR"] or None
 
     # Overlay secrets from environment — never from yaml
-    data["gemini_api_key"] = os.getenv("GEMINI_API_KEY")
-    data["elevenlabs_api_key"] = os.getenv("ELEVENLABS_API_KEY")
-    data["tiktok_access_token"] = os.getenv("TIKTOK_ACCESS_TOKEN")
-    data["tiktok_refresh_token"] = os.getenv("TIKTOK_REFRESH_TOKEN")
-    data["tiktok_client_key"] = os.getenv("TIKTOK_CLIENT_KEY")
-    data["tiktok_client_secret"] = os.getenv("TIKTOK_CLIENT_SECRET")
-    data["instagram_access_token"] = os.getenv("INSTAGRAM_ACCESS_TOKEN")
-    data["instagram_user_id"] = os.getenv("INSTAGRAM_USER_ID")
-    data["instagram_app_id"] = os.getenv("INSTAGRAM_APP_ID")
-    data["instagram_app_secret"] = os.getenv("INSTAGRAM_APP_SECRET")
-    data["reddit_client_id"] = os.getenv("REDDIT_CLIENT_ID")
-    data["reddit_client_secret"] = os.getenv("REDDIT_CLIENT_SECRET")
-    data["reddit_user_agent"] = os.getenv("REDDIT_USER_AGENT")
+    data["gemini_api_key"] = _secret("GEMINI_API_KEY", profile)
+    data["elevenlabs_api_key"] = _secret("ELEVENLABS_API_KEY", profile)
+    data["tiktok_access_token"] = _secret("TIKTOK_ACCESS_TOKEN", profile)
+    data["tiktok_refresh_token"] = _secret("TIKTOK_REFRESH_TOKEN", profile)
+    data["tiktok_client_key"] = _secret("TIKTOK_CLIENT_KEY", profile)
+    data["tiktok_client_secret"] = _secret("TIKTOK_CLIENT_SECRET", profile)
+    data["instagram_access_token"] = _secret("INSTAGRAM_ACCESS_TOKEN", profile)
+    data["instagram_user_id"] = _secret("INSTAGRAM_USER_ID", profile)
+    data["instagram_app_id"] = _secret("INSTAGRAM_APP_ID", profile)
+    data["instagram_app_secret"] = _secret("INSTAGRAM_APP_SECRET", profile)
+    data["reddit_client_id"] = _secret("REDDIT_CLIENT_ID", profile)
+    data["reddit_client_secret"] = _secret("REDDIT_CLIENT_SECRET", profile)
+    data["reddit_user_agent"] = _secret("REDDIT_USER_AGENT", profile)
 
     _config = Config.model_validate(data)
     return _config
