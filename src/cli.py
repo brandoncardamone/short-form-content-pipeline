@@ -58,7 +58,9 @@ def _db(cfg):
 
 # Which generator, renderer and cover-frame rule each content_format uses.
 # Adding a format means adding it here, to ContentWeights, and nowhere else.
-CAPTION_FORMATS = ("wiki_facts", "monologue")
+CAPTION_FORMATS = ("wiki_facts", "monologue", "explainer")
+# Caption formats that carry two speakers, so the renderer shows who is talking.
+SPEAKER_CAPTION_FORMATS = ("explainer",)
 CHAT_FORMATS = ("textchain", "groupchat")
 
 
@@ -72,6 +74,9 @@ def _generate_for_format(content_format: str, cfg, conn):
     if content_format == "monologue":
         from src.generate.monologue import generate_monologue_script
         return generate_monologue_script(cfg, conn)
+    if content_format == "explainer":
+        from src.generate.explainer import generate_explainer_script
+        return generate_explainer_script(cfg, conn)
     if content_format == "groupchat":
         from src.generate.groupchat import generate_groupchat_script
         return generate_groupchat_script(cfg, conn)
@@ -210,7 +215,11 @@ def cmd_render(args):
             frames = renderer.render_script(script.beats, script.card_meta, durations_ms)
         elif fmt in CAPTION_FORMATS:
             from src.render.caption_cards import CaptionRenderer
-            renderer = CaptionRenderer(outdir=frames_dir)
+            speakers = None
+            if fmt in SPEAKER_CAPTION_FORMATS:
+                from src.generate.explainer import speaker_map
+                speakers = speaker_map(cfg)
+            renderer = CaptionRenderer(outdir=frames_dir, speakers=speakers)
             frames = renderer.render_script(script.beats, durations_ms)
         else:
             messages = [{"speaker": b.speaker, "text": b.text} for b in script.beats]

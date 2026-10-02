@@ -66,3 +66,25 @@ html, body {
 
 /* Generators mark emphasis by wrapping a word in *asterisks*. */
 #caption .hi { color: var(--highlight); }
+
+/* Two-speaker (explainer) mode. The name sits above the line and is the only
+ * thing that changes between speakers - the caption itself stays white so it
+ * remains readable over arbitrary footage. Colouring whole captions per
+ * speaker was the obvious alternative and is worse: half the video ends up in
+ * a colour chosen for identity rather than legibility. */
+#speaker {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(100% + 26px);
+  white-space: nowrap;
+  font-family: "Lato", "DejaVu Sans", "Liberation Sans", sans-serif;
+  font-weight: 900;
+  font-size: 44px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--speaker-color, #fff);
+  -webkit-text-stroke: 7px #000;
+  paint-order: stroke fill;
+  text-shadow: 0 5px 0 rgba(0, 0, 0, .55);
+}

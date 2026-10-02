@@ -6,6 +6,9 @@
 </head>
 <body>
   <div id="stage" style="--highlight: {{ highlight }}">
+    {% if speaker_name %}
+    <div id="speaker" style="--speaker-color: {{ speaker_color }}">{{ speaker_name }}</div>
+    {% endif %}
     <div id="caption" style="font-size: {{ font_size }}px">{{ html_text }}</div>
   </div>
 </body>

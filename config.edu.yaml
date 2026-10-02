@@ -1,0 +1,93 @@
+# Account two: the two-character explainer channel.
+#
+# Run it with:  python -m src.cli cloud-tick --profile edu
+# (or PROFILE=edu). See src/config.py for how profiles resolve.
+#
+# Credentials: set INSTAGRAM_ACCESS_TOKEN_EDU and INSTAGRAM_USER_ID_EDU in the
+# environment. Anything without an _EDU suffix falls back to the shared value,
+# which is what lets both accounts use one GEMINI_API_KEY.
+#
+# This file is deliberately a full config rather than an overlay on config.yaml
+# - an overlay makes it ambiguous which account a given setting applies to, and
+# posting to the wrong account is the mistake worth engineering against.
+
+video:
+  width: 1080
+  height: 1920
+  fps: 30
+  # Explainers need a little longer than drama - the payoff is understanding
+  # something, which cannot land in 25 seconds.
+  target_duration_min: 35
+  target_duration_max: 60
+
+tts:
+  engine: chatterbox
+  speed: 1.3                  # slightly slower than account one; this is teaching, not a rant
+  speed_jitter: 0.1
+  exaggeration: 0.65
+  exaggeration_jitter: 0.15
+  cfg_weight: 0.45
+  cfg_weight_jitter: 0.1
+  gap_ms: 90
+  voices:
+    a: voice_a                # the expert
+    b: voice_b                # the student
+
+llm:
+  model: gemini-3.6-flash
+  fallback_models:
+    - gemini-3.8-flash
+    - gemini-3.1-flash-lite
+
+content:
+  format: random
+  weights:
+    explainer: 1              # this account is the explainer format, nothing else
+    reddit_story: 0
+    textchain: 0
+    groupchat: 0
+    wiki_facts: 0
+    monologue: 0
+
+# The recurring duo IS the channel's identity and the reason to follow rather
+# than just watch. Renaming them after the account has any recognition throws
+# that away, so treat these as fixed once it is live.
+explainer:
+  expert_name: "DOC"
+  expert_color: "#5EC8FF"
+  student_name: "KIP"
+  student_color: "#FFE300"
+
+schedule:
+  posts_per_day: 1
+  timezone: America/New_York
+  window_start_hour: 9
+  window_end_hour: 23
+  min_gap_minutes: 30
+  jitter_max_minutes: 45
+  platform: instagram         # TikTok stays off until the app audit clears
+
+tiktok:
+  post_mode: inbox
+
+card:
+  contact_name: "unused"      # no chat-card formats on this account
+  avatar: null
+
+output:
+  work_dir: output/work_edu
+  ready_dir: output/ready_edu
+  # Its own database. This is the single most important line in the file: a
+  # shared db would let the two accounts claim each other's videos and dedupe
+  # against each other's premises.
+  db_path: data/state_edu.db
+  mobile_sync_dir: null
+  mobile_sync_cap_gb: 1.0
+
+music:
+  enabled: true
+  volume_db: -28
+
+backgrounds:
+  normalized_dir: assets/backgrounds/normalized
+  clips: []

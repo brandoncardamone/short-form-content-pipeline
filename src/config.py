@@ -94,6 +94,17 @@ class BackgroundsConfig(BaseModel):
     clips: list[BackgroundClipConfig] = []
 
 
+class ExplainerConfig(BaseModel):
+    """The recurring duo for the explainer format. They are the channel's
+    identity - a reason to follow rather than just watch - so they are config
+    rather than constants, and should not be changed casually once an account
+    has built any recognition."""
+    expert_name: str = "DOC"
+    expert_color: str = "#5EC8FF"
+    student_name: str = "KIP"
+    student_color: str = "#FFE300"
+
+
 class ContentWeights(BaseModel):
     """Relative odds of each format when content.format is "random". A format
     set to 0 is never produced, which is the way to retire one without
@@ -103,6 +114,7 @@ class ContentWeights(BaseModel):
     groupchat: int = 2
     wiki_facts: int = 2
     monologue: int = 2
+    explainer: int = 0      # account two's format; off by default on the main profile
 
 
 class ContentConfig(BaseModel):
@@ -174,6 +186,7 @@ class Config(BaseModel):
     reddit: RedditConfig = RedditConfig()
     tiktok: TikTokConfig = TikTokConfig()
     schedule: ScheduleConfig = ScheduleConfig()
+    explainer: ExplainerConfig = ExplainerConfig()
 
     # Secrets — never in config.yaml, always from environment
     gemini_api_key: Optional[str] = None

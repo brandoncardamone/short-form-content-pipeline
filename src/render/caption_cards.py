@@ -73,7 +73,7 @@ def strip_emphasis(text: str) -> str:
 
 
 class CaptionRenderer:
-    def __init__(self, outdir=Path("out"), highlight=None):
+    def __init__(self, outdir=Path("out"), highlight=None, speakers=None):
         self.css = (HERE / "caption.css").read_text()
         self.tpl = Template((HERE / "caption.html").read_text())
         self.outdir = Path(outdir)
@@ -81,17 +81,24 @@ class CaptionRenderer:
         # Fixed for the whole video: changing it between beats would read as a
         # glitch rather than as variety.
         self.highlight = highlight or random.choice(HIGHLIGHT_COLOURS)
+        # {"a": {"name": "DOC", "color": "#5EC8FF"}, ...} for two-speaker
+        # explainer scripts; None for single-narrator formats, which render
+        # exactly as before with no name shown.
+        self.speakers = speakers or {}
 
-    def _render_at(self, page, html_text: str, font_size: int):
+    def _render_at(self, page, html_text: str, font_size: int, speaker=None):
+        info = self.speakers.get(speaker) if speaker else None
         page.set_content(self.tpl.render(
             css=self.css, html_text=html_text, font_size=font_size,
             highlight=self.highlight,
+            speaker_name=(info or {}).get("name"),
+            speaker_color=(info or {}).get("color", "#ffffff"),
         ))
 
-    def _fit(self, page, html_text: str) -> int:
+    def _fit(self, page, html_text: str, speaker=None) -> int:
         """Largest size in the range that keeps the text inside the stage box."""
         for size in range(MAX_FONT_PX, MIN_FONT_PX - 1, -FONT_STEP_PX):
-            self._render_at(page, html_text, size)
+            self._render_at(page, html_text, size, speaker)
             overflows = page.evaluate(
                 "() => {"
                 "  const s = document.getElementById('stage');"
@@ -122,8 +129,9 @@ class CaptionRenderer:
 
             for i, beat in enumerate(beats):
                 html_text = _to_html(beat.text)
-                size = self._fit(page, html_text)
-                self._render_at(page, html_text, size)
+                speaker = getattr(beat, "speaker", None) if self.speakers else None
+                size = self._fit(page, html_text, speaker)
+                self._render_at(page, html_text, size, speaker)
                 out = self.outdir / f"f{i:05d}.png"
                 page.screenshot(path=str(out), omit_background=True)
                 frames.append(Frame(out, beat_durations_ms[i]))
