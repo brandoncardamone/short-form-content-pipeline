@@ -5,8 +5,14 @@ output/
 # and cmd_cloud_tick in cli.py). Its `tokens` table is scrubbed (DELETE FROM
 # tokens) before every commit — never let a real access/refresh token reach
 # this file in a commit, this repo is public.
+#
+# One database per account profile (see src/config.py). Each is listed here
+# explicitly rather than as !data/state*.db, so a scratch database such as
+# state_test.db can never be swept into a commit. scripts/scrub_tokens.py
+# scrubs every data/state*.db regardless.
 data/*
 !data/state.db
+!data/state_terraria.db
 assets/backgrounds/
 assets/voices/
 src/out/

@@ -33,12 +33,17 @@ def decide() -> tuple[bool, str]:
         _minutes_since_last_publish,
         _now_in_schedule_tz,
         _posts_today,
+        _publish_credentials_missing,
     )
 
     cfg = _cfg()
     sc = cfg.schedule
     conn = _db(cfg)
     now = _now_in_schedule_tz(cfg)
+
+    missing = _publish_credentials_missing(cfg)
+    if missing:
+        return False, missing
 
     if not (sc.window_start_hour <= now.hour < sc.window_end_hour):
         return False, (f"{now:%H:%M} is outside the posting window "

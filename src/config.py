@@ -92,6 +92,10 @@ class BackgroundClipConfig(BaseModel):
 class BackgroundsConfig(BaseModel):
     normalized_dir: Path = Path("assets/backgrounds/normalized")
     clips: list[BackgroundClipConfig] = []
+    # Whether a video may mirror its background (see _pick_background_look).
+    # Off for footage with on-screen text: the first Terraria build came out
+    # with the boss health readout written backwards.
+    allow_flip: bool = True
 
 
 class ExplainerConfig(BaseModel):
@@ -115,6 +119,7 @@ class ContentWeights(BaseModel):
     wiki_facts: int = 2
     monologue: int = 2
     explainer: int = 0      # account two's format; off by default on the main profile
+    terraria: int = 0       # the Terraria account's format; see config.terraria.yaml
 
 
 class ContentConfig(BaseModel):
@@ -226,17 +231,23 @@ def config_path_for(profile: str) -> Path:
     return ROOT / f"config.{profile}.yaml"
 
 
-def _secret(name: str, profile: str) -> Optional[str]:
-    """Per-profile secret with a fallback to the shared one.
+def _secret(name: str, profile: str, shared: bool = True) -> Optional[str]:
+    """Per-profile secret, with a fallback to the shared one where that is safe.
 
     Looks for NAME_<PROFILE> first, then NAME. So a second account sets
     INSTAGRAM_ACCESS_TOKEN_EDU while still sharing GEMINI_API_KEY, without
     needing every variable duplicated.
+
+    shared=False disables the fallback, and is used for anything that
+    identifies WHICH ACCOUNT gets posted to. Falling back there means a profile
+    whose own token is missing or misnamed silently publishes its videos to the
+    main account - it returns None instead, and the publishers skip cleanly on
+    missing credentials.
     """
     if profile != DEFAULT_PROFILE:
         scoped = os.getenv(f"{name}_{profile.upper()}")
-        if scoped:
-            return scoped
+        if scoped or not shared:
+            return scoped or None
     return os.getenv(name)
 
 
@@ -270,12 +281,15 @@ def load_config(config_path: Optional[Path] = None) -> Config:
     # Overlay secrets from environment — never from yaml
     data["gemini_api_key"] = _secret("GEMINI_API_KEY", profile)
     data["elevenlabs_api_key"] = _secret("ELEVENLABS_API_KEY", profile)
-    data["tiktok_access_token"] = _secret("TIKTOK_ACCESS_TOKEN", profile)
-    data["tiktok_refresh_token"] = _secret("TIKTOK_REFRESH_TOKEN", profile)
+    # Account-identifying, so never inherited from the main account. The app
+    # credentials below them are per developer app, not per account, and one
+    # app can serve several accounts.
+    data["tiktok_access_token"] = _secret("TIKTOK_ACCESS_TOKEN", profile, shared=False)
+    data["tiktok_refresh_token"] = _secret("TIKTOK_REFRESH_TOKEN", profile, shared=False)
     data["tiktok_client_key"] = _secret("TIKTOK_CLIENT_KEY", profile)
     data["tiktok_client_secret"] = _secret("TIKTOK_CLIENT_SECRET", profile)
-    data["instagram_access_token"] = _secret("INSTAGRAM_ACCESS_TOKEN", profile)
-    data["instagram_user_id"] = _secret("INSTAGRAM_USER_ID", profile)
+    data["instagram_access_token"] = _secret("INSTAGRAM_ACCESS_TOKEN", profile, shared=False)
+    data["instagram_user_id"] = _secret("INSTAGRAM_USER_ID", profile, shared=False)
     data["instagram_app_id"] = _secret("INSTAGRAM_APP_ID", profile)
     data["instagram_app_secret"] = _secret("INSTAGRAM_APP_SECRET", profile)
     data["reddit_client_id"] = _secret("REDDIT_CLIENT_ID", profile)

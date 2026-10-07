@@ -49,6 +49,35 @@ permissions:
 
 jobs:
   tick:
+    # One job per account profile, in parallel. A profile is a config file
+    # (config.yaml / config.<profile>.yaml), its own state database and its own
+    # account credentials - see src/config.py. PROFILE is set once here, at job
+    # level, so the gate, the tick and the scrub all agree on which account
+    # they are; setting it per step is how one of them ends up on the default.
+    #
+    # fail-fast is off because the accounts are independent: one account's
+    # failed publish must not cancel the other's build mid-flight.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: main
+            state: data/state.db
+          - profile: terraria
+            state: data/state_terraria.db
+    env:
+      PROFILE: ${{ matrix.profile }}
+      # Account credentials for every profile. config._secret picks
+      # NAME_<PROFILE> for a non-default profile and never falls back to the
+      # main account's token, so a job only ever sees its own account. They are
+      # at job level because the gate needs them too: it skips a profile that
+      # has nowhere to publish.
+      INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+      INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+      INSTAGRAM_ACCESS_TOKEN_TERRARIA: ${{ secrets.INSTAGRAM_ACCESS_TOKEN_TERRARIA }}
+      INSTAGRAM_USER_ID_TERRARIA: ${{ secrets.INSTAGRAM_USER_ID_TERRARIA }}
+      TIKTOK_ACCESS_TOKEN: ${{ secrets.TIKTOK_ACCESS_TOKEN }}
+      TIKTOK_REFRESH_TOKEN: ${{ secrets.TIKTOK_REFRESH_TOKEN }}
     runs-on: ubuntu-latest
     # cloud-tick now catches up on every overdue slot in one run (not just
     # the first), since GitHub's actual scheduled cadence can run hours
@@ -105,7 +134,7 @@ jobs:
 
       - name: Cache downloaded pipeline assets
         id: cache-assets
-        if: steps.gate.outputs.proceed != 'false'
+        if: steps.gate.outputs.proceed != 'false' && matrix.profile == 'main'
         uses: actions/cache@v6
         with:
           path: |
@@ -114,12 +143,42 @@ jobs:
             assets/music
           key: pipeline-assets-v1
 
+      # The terraria profile has its own background footage and shares only
+      # the voice references and music, so it gets its own cache rather than
+      # restoring the other account's 1.5GB of clips it never uses. Background
+      # clips live on a separate release (assets-terraria-v1). Adding clips
+      # means uploading them there AND bumping this key, or the runner keeps
+      # restoring the old set - the same trap as pipeline-assets-v1.
+      - name: Cache downloaded pipeline assets (terraria)
+        id: cache-assets-terraria
+        if: steps.gate.outputs.proceed != 'false' && matrix.profile == 'terraria'
+        uses: actions/cache@v6
+        with:
+          path: |
+            assets/backgrounds/terraria
+            assets/voices
+            assets/music
+          key: pipeline-assets-terraria-v1
+
+      - name: Download pipeline assets from release (terraria)
+        if: steps.gate.outputs.proceed != 'false' && matrix.profile == 'terraria' && steps.cache-assets-terraria.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p assets/backgrounds/terraria assets/voices assets/music
+          gh release download assets-terraria-v1 --repo "${{ github.repository }}" \
+            --pattern "*.mp4" --dir assets/backgrounds/terraria
+          gh release download assets-v1 --repo "${{ github.repository }}" \
+            --pattern "chatterbox_ref_*.wav" --dir assets/voices
+          gh release download assets-v1 --repo "${{ github.repository }}" \
+            --pattern "soft_ambient.wav" --dir assets/music
+
       # Large binaries (background clips, TTS voice references, ambient
       # music) live as attachments on the "assets-v1" GitHub Release instead
       # of Git LFS — they total ~1.65GB, over LFS's 1GB free storage tier.
       # Only runs on a cache miss (first run, or if the cache is ever evicted).
       - name: Download pipeline assets from release
-        if: steps.gate.outputs.proceed != 'false' && steps.cache-assets.outputs.cache-hit != 'true'
+        if: steps.gate.outputs.proceed != 'false' && matrix.profile == 'main' && steps.cache-assets.outputs.cache-hit != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -156,13 +215,10 @@ jobs:
         if: steps.gate.outputs.proceed != 'false'
         env:
           MOBILE_SYNC_DIR: ""
+          # Account tokens come from the job-level env above.
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
-          INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
           INSTAGRAM_APP_ID: ${{ secrets.INSTAGRAM_APP_ID }}
           INSTAGRAM_APP_SECRET: ${{ secrets.INSTAGRAM_APP_SECRET }}
-          TIKTOK_ACCESS_TOKEN: ${{ secrets.TIKTOK_ACCESS_TOKEN }}
-          TIKTOK_REFRESH_TOKEN: ${{ secrets.TIKTOK_REFRESH_TOKEN }}
           TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
           TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
         run: .venv/bin/python -m src.cli cloud-tick
@@ -184,11 +240,18 @@ jobs:
         # file rather than an inline python -c because inline it depended on
         # `python` being on PATH, and where it is not (python3 only) the scrub
         # failed silently while the commit carried on.
+        #
+        # Each matrix job commits only its own profile's database (STATE). The
+        # two jobs run in parallel and so race each other's push as well as
+        # ordinary code pushes; the retry loop below is what absorbs that, and
+        # it is safe because they never touch the same file.
         if: always()
+        env:
+          STATE: ${{ matrix.state }}
         run: |
           set -euo pipefail
-          if [ ! -f data/state.db ]; then
-            echo "No data/state.db — nothing to commit."
+          if [ ! -f "$STATE" ]; then
+            echo "No $STATE — nothing to commit."
             exit 0
           fi
 
@@ -199,7 +262,7 @@ jobs:
           else
             PY=python3
           fi
-          "$PY" scripts/scrub_tokens.py
+          "$PY" scripts/scrub_tokens.py "$STATE"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -216,17 +279,18 @@ jobs:
           # executes at a time (concurrency group), so this run's copy is
           # authoritative: take the newest master, lay our state.db on top,
           # commit, push, and retry from fresh if someone beat us to it.
-          cp data/state.db "$RUNNER_TEMP/state.db"
-          for attempt in 1 2 3; do
+          cp "$STATE" "$RUNNER_TEMP/state.db"
+          for attempt in 1 2 3 4 5; do
             git fetch --depth=1 origin master
-            git checkout -B master origin/master
-            cp "$RUNNER_TEMP/state.db" data/state.db
-            git add data/state.db
+            # -f: our only local change is STATE itself, already saved above.
+            git checkout -f -B master origin/master
+            cp "$RUNNER_TEMP/state.db" "$STATE"
+            git add "$STATE"
             if git diff --cached --quiet; then
               echo "No state changes to commit."
               exit 0
             fi
-            git commit -m "Update pipeline state [skip ci]"
+            git commit -m "Update pipeline state ($PROFILE) [skip ci]"
             if git push origin HEAD:master; then
               echo "State committed on attempt $attempt."
               exit 0
@@ -234,5 +298,5 @@ jobs:
             echo "Push rejected (attempt $attempt) — refetching and retrying."
             sleep $((attempt * 5))
           done
-          echo "Could not push state after 3 attempts." >&2
+          echo "Could not push state after 5 attempts." >&2
           exit 1

@@ -18,6 +18,8 @@ EMOJI_PATTERN = re.compile(
 )
 
 TEXTCHAIN_BASE_TAGS = ["storytime", "texts", "drama", "fyp"]
+TERRARIA_BASE_TAGS = ["terraria", "terrariatips", "gaming"]
+TERRARIA_CREDIT = "Info from the Terraria Wiki (terraria.wiki.gg)"
 
 
 def strip_emoji(text: str) -> str:
@@ -48,8 +50,16 @@ def build_caption(content_format: str, hook: str, tags: list[str]) -> str:
         cleaned = [_clean_tag(t) for t in tags if t]
         cleaned = [t for t in cleaned if t][:3]
         final_tags = _dedupe(cleaned + TEXTCHAIN_BASE_TAGS)
+    elif content_format == "terraria":
+        cleaned = [_clean_tag(t) for t in tags if t]
+        cleaned = [t for t in cleaned if t][:3]
+        final_tags = _dedupe(TERRARIA_BASE_TAGS + cleaned)
     else:
         final_tags = _dedupe([_clean_tag(t) for t in tags if t])
 
     hashtags = " ".join(f"#{t}" for t in final_tags)
-    return f"{hook_text}\n\n{hashtags}" if hashtags else hook_text
+    caption = f"{hook_text}\n\n{hashtags}" if hashtags else hook_text
+    if content_format == "terraria":
+        # The wiki's text is CC BY-NC-SA, which requires attribution.
+        caption += f"\n\n{TERRARIA_CREDIT}"
+    return caption

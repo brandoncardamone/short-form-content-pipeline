@@ -25,3 +25,6 @@ praw
 
 # HTTP (publishing)
 requests
+
+# Terraria wiki article parsing (sources/terraria.py)
+beautifulsoup4

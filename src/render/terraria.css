@@ -1,0 +1,130 @@
+/* Terraria format: subject title, a framed picture panel, and a caption.
+ *
+ * Shares nothing with the other templates on purpose, like caption.css.
+ * Rendered with omit_background, so the gameplay footage shows through
+ * everywhere that is not drawn here.
+ *
+ * Chromium draws only the STATIC parts (title, panel frame, label, caption,
+ * progress track). The picture inside #media and the progress fill are
+ * composited per frame by terraria_cards.py, which reads the #media and
+ * #progress boxes back from the page - so moving either here moves the
+ * picture with it, and nothing in Python needs to change.
+ *
+ * Vertical layout keeps clear of Instagram's own chrome: roughly the top
+ * 230px and bottom 420px of a Reel are covered by the app's UI.
+ *
+ * Font is pinned to Lato for the reason given in caption.css.
+ */
+
+:root {
+  --highlight: #FFE300;
+  --panel-bg: rgba(22, 29, 72, 0.88);
+  --panel-edge: #7386ea;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 1080px;
+  height: 1920px;
+  background: transparent;
+  overflow: hidden;
+  font-family: "Lato", "DejaVu Sans", "Liberation Sans", sans-serif;
+  font-weight: 900;
+}
+
+#title {
+  position: absolute;
+  top: 250px;
+  left: 60px;
+  width: 960px;
+  text-align: center;
+  font-size: 66px;
+  line-height: 1.05;
+  letter-spacing: 0.01em;
+  color: var(--highlight);
+  -webkit-text-stroke: 8px #000;
+  paint-order: stroke fill;
+  text-shadow: 0 6px 0 rgba(0, 0, 0, .55);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#panel {
+  position: absolute;
+  left: 110px;
+  top: 360px;
+  width: 860px;
+  height: 610px;
+  background: var(--panel-bg);
+  border: 6px solid var(--panel-edge);
+  border-radius: 28px;
+  box-shadow:
+    inset 0 0 0 4px rgba(0, 0, 0, .35),
+    0 14px 40px rgba(0, 0, 0, .55);
+}
+#panel.empty { display: none; }
+
+/* The picture is drawn into this box by Python, centred. */
+#media {
+  position: absolute;
+  left: 44px;
+  right: 44px;
+  top: 40px;
+  bottom: 112px;
+}
+
+#label {
+  position: absolute;
+  left: 30px;
+  right: 30px;
+  bottom: 30px;
+  text-align: center;
+  font-size: 40px;
+  color: #fff;
+  -webkit-text-stroke: 6px #000;
+  paint-order: stroke fill;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Track only; the fill is drawn by Python so it advances smoothly. */
+#progress {
+  position: absolute;
+  left: 110px;
+  top: 996px;
+  width: 860px;
+  height: 12px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, .5);
+}
+
+#stage {
+  position: absolute;
+  left: 90px;
+  top: 1040px;
+  width: 900px;
+  height: 440px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#caption {
+  font-size: 84px;          /* overridden inline by the renderer after measuring */
+  line-height: 1.12;
+  letter-spacing: -0.01em;
+  text-align: center;
+  text-transform: uppercase;
+  color: #fff;
+  text-wrap: balance;
+  -webkit-text-stroke: 9px #000;
+  paint-order: stroke fill;
+  text-shadow:
+    0 6px 0 rgba(0, 0, 0, .55),
+    0 12px 34px rgba(0, 0, 0, .45);
+}
+
+#caption .hi { color: var(--highlight); }

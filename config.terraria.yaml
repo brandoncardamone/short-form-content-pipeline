@@ -1,0 +1,87 @@
+# The Terraria account: one wiki article per video.
+#
+# Run it with:  python -m src.cli cloud-tick --profile terraria
+# (or PROFILE=terraria). See src/config.py for how profiles resolve.
+#
+# Credentials: set INSTAGRAM_ACCESS_TOKEN_TERRARIA and INSTAGRAM_USER_ID_TERRARIA
+# in the environment. Anything without the suffix falls back to the shared
+# value, which is what lets every account use one GEMINI_API_KEY.
+#
+# A full config rather than an overlay on config.yaml, for the reason given in
+# config.edu.yaml: posting to the wrong account is the mistake worth
+# engineering against.
+
+video:
+  width: 1080
+  height: 1920
+  fps: 30
+  # Long enough to actually explain an item. Build time scales with this:
+  # Chatterbox on a CPU runner is most of a build, so going past ~2 minutes
+  # risks the workflow timeout before it risks anything else.
+  target_duration_min: 60
+  target_duration_max: 120
+
+tts:
+  engine: chatterbox
+  speed: 1.3
+  speed_jitter: 0.08
+  exaggeration: 0.6
+  exaggeration_jitter: 0.12
+  cfg_weight: 0.45
+  cfg_weight_jitter: 0.1
+  gap_ms: 110
+  voices:
+    a: voice_b                # the narrator (the male reference clip); one voice only
+    b: voice_b
+
+llm:
+  model: gemini-3.6-flash
+  fallback_models:
+    - gemini-3.8-flash
+    - gemini-3.1-flash-lite
+
+content:
+  format: random
+  weights:
+    terraria: 1               # this account is the Terraria format, nothing else
+    explainer: 0
+    reddit_story: 0
+    textchain: 0
+    groupchat: 0
+    wiki_facts: 0
+    monologue: 0
+
+schedule:
+  posts_per_day: 1
+  timezone: America/New_York
+  window_start_hour: 9
+  window_end_hour: 23
+  min_gap_minutes: 180
+  jitter_max_minutes: 45
+  platform: instagram
+
+tiktok:
+  post_mode: inbox
+
+card:
+  contact_name: "unused"      # no chat-card formats on this account
+  avatar: null
+
+output:
+  work_dir: output/work_terraria
+  ready_dir: output/ready_terraria
+  # Its own database, so the accounts cannot claim each other's videos or
+  # count each other's posts toward the daily quota.
+  db_path: data/state_terraria.db
+  mobile_sync_dir: null
+  mobile_sync_cap_gb: 1.0
+
+music:
+  enabled: true
+  volume_db: -30
+
+backgrounds:
+  # Terraria gameplay only - kept apart from the other account's clips.
+  normalized_dir: assets/backgrounds/terraria
+  clips: []
+  allow_flip: false           # the game's HUD text would read backwards

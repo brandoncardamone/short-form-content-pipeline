@@ -659,6 +659,79 @@ API-sent caption is structurally ignored — so each video needs finishing by
 hand in the app. `schedule.platform` is `instagram`, so nothing reaches TikTok
 at all today.
 
+### The Terraria account (built and first posted 2026-10-06)
+
+A second account, @terrariawikiguru, on the `terraria` profile
+(`config.terraria.yaml`, its own `data/state_terraria.db`): one Terraria Wiki
+article per video, 60-120s. Run any stage with `--profile terraria`. The first
+video ("The Aether") was built locally and posted by hand on 2026-10-06; the
+workflow now runs one matrix job per profile, so it posts once a day on the
+same cron as the main account.
+
+**The workflow needs the `assets-terraria-v1` release to exist.** It holds the
+background footage (`terraria_bosses_1.mp4`, 493MB, normalized with
+`ingest --crf 23`). Until it does, the terraria job fails at the asset download
+on every run that is due to post; the main job is unaffected.
+
+| stage | where | notes |
+|---|---|---|
+| source | `src/sources/terraria.py` | random article via terraria.wiki.gg's MediaWiki API, no auth |
+| script | same | one Gemini call to write, one to fact-check |
+| render | `src/render/terraria_cards.py` + `terraria.html/.css` | picture panel + caption, several frames per beat |
+| captions | `src/captions.py` | credits the wiki; the text is CC BY-NC-SA |
+
+**Page choice happens before any LLM call.** Most random articles are too thin
+(under `MIN_PROSE_CHARS`), so a batch is fetched and the richest unused one
+wins; typically 1-5 of 12 survive. The category filter is deliberately narrow -
+nearly every article carries `Entities_patched_in_...`, and an early filter
+matching "patch" rejected the entire wiki.
+
+**The fact-check pass is not optional polish.** The first real script got 3 of
+26 beats wrong ("cannot be cancelled by the Nurse" became "strictly
+permanent"). `_verify` re-reads every beat against the article and rewrites or
+drops what is unsupported. It fails open, so a malformed reply costs accuracy
+rather than the post.
+
+**The renderer is two layers.** Chromium draws the static layer once per beat;
+Pillow composites the GIF frame or bobbing sprite and the progress bar onto it
+at 12fps. The picture's position is read back from the `#media` box, so layout
+stays CSS-only. ~1s of render per second of video, ~3MB of PNG per second.
+
+**Pacing is measured from one video**: 243 words -> 54.15s, i.e. 4.5 words/s
+including gaps (`WORDS_PER_SEC`). Asked for a word total alone the model came
+back short on every call; it honours a beat count, which is why the prompt
+gives both.
+
+**Two changes here also affect the other profiles**, both fixing ways a
+non-default profile could post to the wrong account:
+- `_secret(..., shared=False)` in `config.py`: Instagram/TikTok tokens and user
+  ids no longer fall back to the unsuffixed (main account) value.
+- `cmd_generate`'s daily-quota fallback to `reddit_story` now only happens
+  where that format's weight is above 0.
+
+- `backgrounds.allow_flip` (new, default true) is false for this profile:
+  mirroring gameplay made the boss health readout read backwards.
+- `cloud-tick` and the gate skip a profile that has no credentials for its
+  platform, instead of building a video that cannot be published.
+
+**Workflow wiring.** `PROFILE` and the account tokens are set at job level so
+the gate, the tick and the scrub agree on the account. Each job commits only
+its own database, and `scripts/scrub_tokens.py` now scrubs whichever database
+it is given (every `data/state*.db` by default) rather than only
+`data/state.db`. The two jobs race each other's state push; the retry loop
+absorbs that because they never touch the same file.
+
+**Known limits:**
+- Both accounts share one Gemini key. Each Terraria video costs 2-4 requests
+  against the same 20/day-per-model cap; testing on 2026-10-06 exhausted
+  `gemini-3.6-flash` and `gemini-3.8-flash` for the day, and the first post
+  was written by `gemini-3.1-flash-lite`.
+- One background clip, 720p upscaled, and much of it is night fights against
+  a black sky. More and brighter footage means: `ingest`, upload to the
+  release, bump the `pipeline-assets-terraria-v1` cache key.
+- Wide images (demo GIFs, infographics) sit small in the panel.
+- Build time on the GitHub runner is unmeasured; ~15 min locally for 60s.
+
 ### Monitoring
 
 `cli.py monitor` checks token validity (catches a revoked/broken token

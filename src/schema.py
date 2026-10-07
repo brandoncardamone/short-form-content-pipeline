@@ -25,6 +25,19 @@ class RedditCardMeta(BaseModel):
     title: Optional[str] = None      # post title; only set when kind="post" and is_first_of_unit
 
 
+class BeatVisual(BaseModel):
+    """
+    What the terraria format shows while a beat is narrated. Only the URL is
+    stored - the renderer downloads it - so a stored script stays renderable
+    on a machine that never ran the generate stage.
+    """
+    url: str
+    label: str = ""                  # shown under the image, e.g. "True Night's Edge"
+    width: int = 0                   # source pixel size, before upscaling
+    height: int = 0
+    animated: bool = False           # a GIF, played back in sync with the video
+
+
 class Script(BaseModel):
     beats: list[Beat]
     title: str
@@ -40,6 +53,10 @@ class Script(BaseModel):
     # groupchat only: {"b": "Dana", "c": "Priya"} - the name shown above each
     # non-protagonist speaker's first bubble in a run.
     participants: Optional[dict[str, str]] = None
+    # terraria only: one entry per beat, same length/order as beats. None means
+    # "keep showing the previous beat's image".
+    visuals: Optional[list[Optional[BeatVisual]]] = None
+    source_url: Optional[str] = None   # terraria only: the wiki article used
 
 
 class RenderedBeat(BaseModel):

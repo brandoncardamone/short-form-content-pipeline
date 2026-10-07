@@ -135,6 +135,8 @@ def build(
     # Card frames are full 1080x1920 screenshots (card position is baked in
     # via CSS), so the overlay is a plain full-frame composite.
     look = _pick_background_look()
+    if not cfg.backgrounds.allow_flip:
+        look["flip"] = False
     logger.info("Background look: flip=%s zoom=%.2f framing=(%.2f, %.2f)",
                 look["flip"], look["zoom"], look["fx"], look["fy"])
     flip = "hflip," if look["flip"] else ""

@@ -77,6 +77,9 @@ def _generate_for_format(content_format: str, cfg, conn):
     if content_format == "explainer":
         from src.generate.explainer import generate_explainer_script
         return generate_explainer_script(cfg, conn)
+    if content_format == "terraria":
+        from src.sources.terraria import generate_terraria_script
+        return generate_terraria_script(cfg, conn)
     if content_format == "groupchat":
         from src.generate.groupchat import generate_groupchat_script
         return generate_groupchat_script(cfg, conn)
@@ -112,6 +115,11 @@ def cmd_generate(args):
         # cap, so there is nothing else to try. Any other error propagates.
         from src.generate.llm import _is_daily_quota
         if content_format == "reddit_story" or not _is_daily_quota(e):
+            raise
+        # Only where reddit_story is a format this account actually posts.
+        # A single-format profile (terraria, edu) sets its weight to 0, and
+        # falling back there would put a Reddit story on the wrong account.
+        if cfg.content.weights.reddit_story <= 0:
             raise
         logger.warning(
             "Gemini daily quota is exhausted - falling back from %s to reddit_story, "
@@ -221,6 +229,11 @@ def cmd_render(args):
                 speakers = speaker_map(cfg)
             renderer = CaptionRenderer(outdir=frames_dir, speakers=speakers)
             frames = renderer.render_script(script.beats, durations_ms)
+        elif fmt == "terraria":
+            from src.render.terraria_cards import TerrariaRenderer
+            renderer = TerrariaRenderer(outdir=frames_dir, title=script.title,
+                                        media_dir=work_dir / "media")
+            frames = renderer.render_script(script.beats, script.visuals, durations_ms)
         else:
             messages = [{"speaker": b.speaker, "text": b.text} for b in script.beats]
             renderer = CardRenderer(
@@ -359,6 +372,9 @@ def _cover_ms_for(content_format: str, rendered_beats) -> int:
     first_beat_ms = rendered_beats[0].duration_ms + rendered_beats[0].gap_ms
     if content_format == "reddit_story" or content_format in CAPTION_FORMATS:
         target = 500.0   # static for the whole beat — any safe point works
+    elif content_format == "terraria":
+        from src.render.terraria_cards import POP_MS
+        target = POP_MS + 250.0   # past the first image's pop-in
     else:
         from src.render.cards import ENTRY_MS
         target = ENTRY_MS + 200.0   # past the bubble pop-in animation, fully "settled"
@@ -683,6 +699,24 @@ def _posts_today(conn, cfg, now) -> int:
     return row[0] if row else 0
 
 
+def _publish_credentials_missing(cfg):
+    """Why this profile cannot publish anywhere, or None if it can.
+
+    Account tokens are per profile and never inherited (see config._secret), so
+    a profile whose secrets are absent or misnamed has nowhere to post. Without
+    this check it would still spend an hour building a video, find that out at
+    the publish step, and mark the video failed - every scheduled run.
+    """
+    platform = cfg.schedule.platform
+    ok_ig = bool(cfg.instagram_access_token and cfg.instagram_user_id)
+    ok_tt = bool(cfg.tiktok_access_token or cfg.tiktok_refresh_token)
+    if (platform in ("both", "instagram") and ok_ig) or (platform in ("both", "tiktok") and ok_tt):
+        return None
+    from src.config import profile_name
+    return (f"profile {profile_name()!r} has no credentials for "
+            f"schedule.platform={platform!r} - nothing could be published")
+
+
 def cmd_cloud_tick(args):
     """
     Entry point for an ephemeral scheduled runner (GitHub Actions) instead of an
@@ -726,6 +760,11 @@ def cmd_cloud_tick(args):
     conn = _db(cfg)
     sc = cfg.schedule
     now = _now_in_schedule_tz(cfg)
+
+    missing = _publish_credentials_missing(cfg)
+    if missing:
+        logger.warning("%s — nothing to do.", missing)
+        return
 
     if not (sc.window_start_hour <= now.hour < sc.window_end_hour):
         logger.info(
@@ -864,7 +903,7 @@ def cmd_ingest(args):
     logging.getLogger().setLevel(logging.DEBUG)
     cfg = _cfg()
     clip = Path(args.clip)
-    out = ingest_clip(clip, Path(cfg.backgrounds.normalized_dir), crop_x=args.crop_x)
+    out = ingest_clip(clip, Path(cfg.backgrounds.normalized_dir), crop_x=args.crop_x, crf=args.crf)
     print(f"Normalized → {out}")
 
 
@@ -1028,6 +1067,8 @@ def main():
     p_ingest = sub.add_parser("ingest", help="Normalize a background clip")
     p_ingest.add_argument("clip", help="Path to source clip")
     p_ingest.add_argument("--crop-x", type=int, default=None)
+    p_ingest.add_argument("--crf", type=int, default=18,
+                          help="x264 quality for the normalized clip (lower = bigger file)")
 
     sub.add_parser("status", help="Show video counts by status")
     sub.add_parser("monitor", help="Check token health + follower/post trend for both platforms")

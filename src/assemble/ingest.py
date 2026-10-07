@@ -92,10 +92,15 @@ def ingest_clip(
     normalized_dir: Path,
     crop_x: int | None = None,
     force: bool = False,
+    crf: int = 18,
 ) -> Path:
     """
     Normalize one clip. Returns path to the normalized file.
     Skips if already present and force=False.
+
+    crf: 18 keeps a high-quality source for the final render. Raise it for a
+    long clip from a low-bitrate source, where 18 only spends bytes preserving
+    upscaled compression artefacts - and GitHub release assets cap at 2GB.
     """
     normalized_dir.mkdir(parents=True, exist_ok=True)
     out_path = normalized_dir / clip_path.name
@@ -119,7 +124,7 @@ def ingest_clip(
             "-an",                    # strip audio — background clips are silent
             "-c:v", "libx264",
             "-preset", "veryfast",
-            "-crf", "18",             # higher quality than final render; source for later
+            "-crf", str(crf),         # default is higher quality than the final render
             "-pix_fmt", "yuv420p",
             str(out_path),
         ],
