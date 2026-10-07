@@ -22,10 +22,12 @@ Public entry point: render_script() -> list[Frame]
 """
 
 import hashlib
+import html
 import io
 import logging
 import math
 import random
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -35,7 +37,7 @@ from PIL import Image, ImageDraw, ImageSequence
 from playwright.sync_api import sync_playwright
 
 from src.render.cards import Frame, FRAME_W, FRAME_H
-from src.render.caption_cards import HIGHLIGHT_COLOURS, _to_html
+from src.render.caption_cards import HIGHLIGHT_COLOURS
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,40 @@ USER_AGENT = "short-form-content-pipeline/1.0 (personal project)"
 MAX_FONT_PX = 84
 MIN_FONT_PX = 40
 FONT_STEP_PX = 4
+
+
+WORD_PAUSE_CHARS = 2     # per-word allowance when estimating word timing
+
+
+def _split_words(text: str) -> list[tuple[str, bool]]:
+    """[(word, emphasised)] with the *asterisk* markers consumed. Emphasis may
+    span several words ("*On Fire!*") or sit inside punctuation ("*lethal*.")."""
+    out, inside = [], False
+    for token in text.split():
+        stars = token.count("*")
+        emphasised = inside or stars > 0
+        if stars % 2:
+            inside = not inside
+        word = token.replace("*", "")
+        if word:
+            out.append((word, emphasised))
+    return out or [("", False)]
+
+
+def _words_html(words, upto: int, mark_current: bool = True) -> str:
+    """Caption markup with words 0..upto visible and the rest laid out but
+    hidden. Escaped here, since the template is told this is safe markup."""
+    spans = []
+    for i, (word, emphasised) in enumerate(words):
+        classes = ["w"]
+        if emphasised:
+            classes.append("hi")
+        if i > upto:
+            classes.append("off")
+        elif i == upto and mark_current:
+            classes.append("cur")
+        spans.append(f'<span class="{" ".join(classes)}">{html.escape(word)}</span>')
+    return " ".join(spans)
 
 
 def _ease_out_back(t: float) -> float:
@@ -163,18 +199,43 @@ class TerrariaRenderer:
             html_text=Markup(html_text), font_size=font_size, highlight=self.highlight,
         ))
 
-    def _base_layer(self, page, text: str, label: str, has_media: bool) -> Image.Image:
-        html_text = _to_html(text)
+    def _base_layers(self, page, text: str, label: str, has_media: bool):
+        """Static layers for one beat: one per word, with the caption revealed
+        up to and including that word. Returns (layers, cumulative time shares).
+
+        Words appear as they are spoken instead of the whole sentence landing
+        at once - it gives the eye something to follow and stops the viewer
+        reading ahead of the voice. Unrevealed words are hidden with
+        `visibility`, not removed, so the line never reflows as it fills in.
+
+        There are no word timestamps from the TTS, so each word's share of the
+        beat is estimated from its length. Over a two-second beat that is
+        within a syllable of the voice, which is what this needs.
+        """
+        words = _split_words(text)
+        size = MAX_FONT_PX
         for size in range(MAX_FONT_PX, MIN_FONT_PX - 1, -FONT_STEP_PX):
-            self._render_at(page, html_text, size, label, has_media)
+            self._render_at(page, _words_html(words, len(words) - 1, mark_current=False),
+                            size, label, has_media)
             overflows = page.evaluate(
                 "() => document.getElementById('caption').getBoundingClientRect().height"
                 " > document.getElementById('stage').getBoundingClientRect().height + 1"
             )
             if not overflows:
                 break
-        png = page.screenshot(omit_background=True)
-        return Image.open(io.BytesIO(png)).convert("RGBA")
+
+        layers = []
+        for k in range(len(words)):
+            self._render_at(page, _words_html(words, k), size, label, has_media)
+            png = page.screenshot(omit_background=True)
+            layers.append(Image.open(io.BytesIO(png)).convert("RGBA"))
+
+        weights = [len(re.sub(r"\W", "", w)) + WORD_PAUSE_CHARS for w, _ in words]
+        total, acc, shares = float(sum(weights)), 0.0, []
+        for w in weights:
+            acc += w
+            shares.append(acc / total)
+        return layers, shares
 
     def _box(self, page, element_id: str) -> tuple[int, int, int, int]:
         r = page.evaluate(
@@ -223,13 +284,16 @@ class TerrariaRenderer:
                     if media is not None and media is not current:
                         current, label, changed_at = media, v.label, now
 
-                base = self._base_layer(page, beat.text, label, current is not None)
+                layers, shares = self._base_layers(page, beat.text, label, current is not None)
 
                 n = max(1, round(beat_durations_ms[i] / step_ms))
                 frame_ms = beat_durations_ms[i] / n
                 for k in range(n):
                     t = now + k * frame_ms
-                    canvas = base.copy()
+                    # The word being spoken at the middle of this frame.
+                    progress = (k + 0.5) / n
+                    word = next((w for w, s in enumerate(shares) if progress < s), len(shares) - 1)
+                    canvas = layers[word].copy()
                     if current is not None:
                         self._paste_media(canvas, current, t - changed_at, (mx, my, mw, mh))
                     fill = int(pw * min(1.0, (t + frame_ms) / total_ms))

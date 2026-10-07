@@ -58,12 +58,18 @@ def run_tts(script: Script, work_dir: Path, cfg: Config) -> list[RenderedBeat]:
 
     work_dir.mkdir(parents=True, exist_ok=True)
     rendered: list[RenderedBeat] = []
+    retakes = unresolved = 0
 
     for i, beat in enumerate(script.beats):
         raw_path = work_dir / f"beat_{i:03d}_raw.wav"
         final_path = work_dir / f"beat_{i:03d}.wav"
 
-        engine.synthesize(beat.text, beat.voice, raw_path)
+        if cfg.tts.qa_enabled:
+            used, passed = _synthesize_checked(engine, beat, raw_path, delivery, cfg, i)
+            retakes += used - 1
+            unresolved += not passed
+        else:
+            engine.synthesize(beat.text, beat.voice, raw_path)
 
         if abs(delivery["speed"] - 1.0) > 0.01:
             _apply_tempo(raw_path, final_path, delivery["speed"])
@@ -79,7 +85,54 @@ def run_tts(script: Script, work_dir: Path, cfg: Config) -> list[RenderedBeat]:
             gap_ms=cfg.tts.gap_ms,
         ))
 
+    if cfg.tts.qa_enabled:
+        logger.info("Voice QA: %d beats, %d retake(s), %d beat(s) kept despite failing every take",
+                    len(rendered), retakes, unresolved)
     return rendered
+
+
+# Delivery used for the final retake of a beat that keeps failing: Chatterbox's
+# calm defaults, which glitch least. One beat read slightly flatter is far less
+# noticeable than one beat of garbled audio.
+SAFE_DELIVERY = {"exaggeration": 0.5, "cfg_weight": 0.5}
+
+
+def _synthesize_checked(engine, beat, raw_path: Path, delivery: dict, cfg, index: int) -> tuple[int, bool]:
+    """Synthesize one beat, re-sampling it until it passes src.tts.qa.
+
+    Returns (takes used, whether the kept take passed). Chatterbox samples, so
+    a retake is a genuinely different read rather than the same failure again.
+    If no take passes, the best-scoring one is kept: a video with one imperfect
+    line still beats no video.
+    """
+    from src.tts import qa
+
+    attempts = max(1, cfg.tts.qa_max_attempts)
+    best_score, best_path, best_verdict = None, None, None
+    for attempt in range(1, attempts + 1):
+        take = raw_path.with_name(f"{raw_path.stem}_take{attempt}.wav")
+        if attempt == attempts and attempts > 1:
+            engine.set_delivery(SAFE_DELIVERY)
+        try:
+            engine.synthesize(beat.text, beat.voice, take)
+        finally:
+            engine.set_delivery(delivery)
+        verdict = qa.check(take, beat.text)
+        if best_score is None or verdict.score > best_score:
+            if best_path is not None:
+                best_path.unlink(missing_ok=True)
+            best_score, best_path, best_verdict = verdict.score, take, verdict
+        else:
+            take.unlink(missing_ok=True)
+        if verdict.ok:
+            break
+        logger.warning("Voice QA: beat %d take %d/%d failed (%s)", index, attempt, attempts, verdict)
+
+    best_path.rename(raw_path)
+    if not best_verdict.ok:
+        logger.warning("Voice QA: beat %d never passed; keeping the best take (%s)",
+                       index, best_verdict)
+    return attempt, best_verdict.ok
 
 
 def _apply_tempo(src: Path, dst: Path, speed: float) -> None:

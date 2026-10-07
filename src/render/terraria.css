@@ -127,4 +127,13 @@ html, body {
     0 12px 34px rgba(0, 0, 0, .45);
 }
 
-#caption .hi { color: var(--highlight); }
+/* One span per word; the renderer reveals them as they are spoken.
+ * inline-block so the current word can scale without reflowing the line, and
+ * `visibility` (not `display`) for unrevealed words so the layout is fixed
+ * from the first frame of the beat. */
+#caption .w { display: inline-block; }
+#caption .w.off { visibility: hidden; }
+/* Grows from its left edge, into the space of the next (still hidden) word.
+ * Scaled from the centre it ran into the word before it. */
+#caption .w.cur { color: var(--highlight); transform: scale(1.1); transform-origin: left center; }
+#caption .w.hi { color: var(--highlight); }

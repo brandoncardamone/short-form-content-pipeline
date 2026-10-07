@@ -62,11 +62,13 @@ MAX_SOURCE_CHARS = 9000
 MAX_IMAGES = 14
 MIN_IMAGE_PX = 16
 
-# Measured on the first real build (243 words -> 54.15s including gaps, at
-# speed 1.31 / gap_ms 110). One data point: re-measure after a few videos, and
-# after any change to the voice, tts.speed or tts.gap_ms, the same way
-# WORDS_PER_SEC in sources/reddit.py has to be.
-WORDS_PER_SEC = 4.5
+# Measured including gaps, on three real builds: 243 words -> 54.2s (4.5/s),
+# 303 -> 60.5s (5.0/s), 264 -> 48.3s (5.5/s, the first with the livelier
+# voice, at speed 1.36). It moves with tts.speed and its jitter, so this is a
+# middle value, not a constant: re-measure after any change to the voice,
+# tts.speed or tts.gap_ms, the same way WORDS_PER_SEC in sources/reddit.py
+# has to be. Too low a value here is what makes videos come out short.
+WORDS_PER_SEC = 5.0
 WORDS_PER_BEAT = 11      # midpoint of the 8-14 words the prompt asks for
 
 # Titles that are never a video: patch notes ("1.4.2.3"), subpages, lists.
@@ -83,6 +85,66 @@ _RICH_SECTIONS = {"tips", "trivia", "notes"}
 
 BASE_TAGS = ["terraria", "terrariatips", "gaming"]
 
+# Subjects players already know and search for. A purely random article is
+# usually something obscure (the first three picks were Debuffs, Ice Queen and
+# The Aether - fine, but luck), and a viewer scrolling past stops for a name
+# they recognise. The wiki exposes no page-view counts, and inbound links are
+# useless as a popularity signal (navigation boxes give a paint roller 327 of
+# them), so this is a hand-kept list. FEATURED_SHARE of videos draw from it;
+# the rest stay random so the account still turns up things nobody expects.
+# A title that does not resolve or is too thin is skipped, so a wrong name
+# here costs one wiki request and nothing else.
+FEATURED_SHARE = 0.65
+FEATURED_TRIES = 6
+FEATURED = [
+    # bosses and events
+    "King Slime", "Eye of Cthulhu", "Eater of Worlds", "Brain of Cthulhu", "Queen Bee",
+    "Skeletron", "Deerclops", "Wall of Flesh", "Queen Slime", "The Twins", "The Destroyer",
+    "Skeletron Prime", "Plantera", "Golem", "Duke Fishron", "Empress of Light",
+    "Lunatic Cultist", "Moon Lord", "Blood Moon", "Goblin Army", "Pirate Invasion",
+    "Solar Eclipse", "Pumpkin Moon", "Frost Moon", "Martian Madness", "Old One's Army",
+    "Lunar Events", "Dungeon Guardian", "The Torch God",
+    # iconic weapons and tools
+    "Zenith", "Terra Blade", "Night's Edge", "Starfury", "Enchanted Sword", "Muramasa",
+    "Minishark", "Megashark", "Star Cannon", "Phoenix Blaster", "Onyx Blaster", "S.D.M.G.",
+    "Terrarian", "Last Prism", "Meowmere", "Star Wrath", "Daybreak", "Solar Eruption",
+    "Vampire Knives", "Rainbow Rod", "Razorblade Typhoon", "Water Bolt", "Space Gun",
+    "Bee Gun", "Blade of Grass", "Influx Waver", "Terraprisma",
+    "Stardust Dragon Staff", "Slime Staff", "Rod of Discord", "Drill Containment Unit",
+    "Shellphone", "Cell Phone", "Magic Mirrors", "Hooks", "Picksaw",
+    # accessories, armor, mounts
+    "Ankh Shield", "Terraspark Boots", "Hermes Boots", "Cloud in a Bottle", "Lucky Horseshoe",
+    "Shield of Cthulhu", "Worm Scarf", "Brain of Confusion", "Celestial Shell",
+    "Soaring Insignia", "Wings", "Molten armor", "Beetle armor", "Solar Flare armor",
+    "Witch's Broom", "Cosmic Car Key", "The Black Spot",
+    # mechanics and world
+    "Shimmer", "Hardmode", "Expert Mode", "Master Mode", "Luck", "Fishing", "Aggro",
+    "Defense", "Critical hit", "Life Crystal", "Life Fruit", "Mana Crystal", "Pylons",
+    "NPCs", "Biome spread", "The Corruption", "The Crimson", "The Hallow",
+    "Dungeon", "Jungle Temple", "Floating Island", "The Underworld", "Glowing Mushroom biome",
+    "Meteorite", "Hellstone", "Chlorophyte Ore", "Luminite", "Altars",
+    "Shadow Orb", "Mimics", "Truffle Worm",
+    "Guide Voodoo Doll", "Clothier Voodoo Doll", "Angler", "Traveling Merchant",
+    "Goblin Tinkerer", "Modifiers", "Journey Mode", "Secret world seeds", "Wire",
+]
+
+# One is drawn per video. Left to itself the model writes the same explainer
+# every time ("X is a Y. You get it by Z."), and a feed of identical videos is
+# what flattened the other account - see HOOK_SHAPES in generate/textchain.py.
+# Add angles here rather than rewriting the prompt.
+ANGLES = [
+    "the mistake most players make with this, and what to do instead",
+    "is it actually worth getting? Give a verdict and defend it",
+    "the hidden mechanic here that the game never explains",
+    "the fastest or earliest way to get this, step by step",
+    "things almost nobody knows about this, most surprising first",
+    "how this compares to the obvious alternative, and when each one wins",
+    "why veterans treat this differently from new players",
+    "the one situation where this is far stronger than it looks",
+    "myth versus reality: what players assume about this that is wrong",
+    "a short survival guide: how this kills or wastes the time of unprepared players",
+]
+
 PROMPT = """You write narration for a short vertical video about ONE thing from the game Terraria.
 The video shows the item's sprite or a clip of it in use, with big captions, over gameplay footage.
 One voice reads the narration aloud. The audience plays Terraria or used to.
@@ -94,6 +156,9 @@ WIKI ARTICLE (your only source of facts):
 
 IMAGES AVAILABLE (use the id to show one):
 {images}
+
+ANGLE FOR THIS VIDEO: {angle}
+Build the whole script around that angle. It decides the hook and what you leave out.
 
 What to write:
 - Do NOT read out stats. Find what is genuinely interesting or useful here: what it is actually
@@ -117,11 +182,15 @@ What to write:
 - Vary sentence shape. Do not end beat after beat on the same kind of punchy last word.
 - In roughly one beat in three, wrap ONE word in *asterisks* for visual emphasis: the word that
   carries the surprise, wherever it falls in the sentence. Most beats have none.
-- For each beat set "image" to the id of the image that matches what is being said right then -
-  the ingredient when you name the ingredient, the demo clip when you describe it in use. Use
-  null to keep the previous image on screen. Change image every 2-4 beats: not every beat, but
-  never leave one picture up for more than about five. Use an animated clip when one fits. The
-  first beat must have an image, and it should be the subject itself.
+- PICTURES carry this video, so keep them changing. For each beat set "image" to what should be
+  on screen while it is said. Two ways to name one:
+    * an id from the list above, e.g. "img3" - use the animated clips whenever they fit;
+    * ANY other Terraria item, weapon, enemy, boss, NPC, block or buff you mention, by its exact
+      wiki name with a "wiki:" prefix, e.g. "wiki:Water Candle" or "wiki:Moon Lord". Use this
+      every time a beat names a specific thing that is not in the list.
+  Show the thing being talked about at the moment it is named. Aim for a new picture on at least
+  every second beat; use null only when the previous picture is still what the beat is about.
+  The first beat must have an image, and it should be the subject itself.
 - The last beat is a question to the viewer that invites a comment.
 
 Output valid JSON only, no markdown fences:
@@ -316,6 +385,50 @@ def _extract(parse: dict) -> Optional[Page]:
     )
 
 
+def resolve_named(names: list[str]) -> dict[str, dict]:
+    """Sprites for things the script mentions that the article does not picture.
+
+    The wiki files every item, enemy and NPC sprite as "File:<Name>.png", so a
+    name is enough to find one. Returns {"wiki:<name lowercased>": image dict}
+    for the names that exist; unknown names are just absent. One request.
+    """
+    wanted = {}
+    for n in names:
+        n = re.sub(r"\s+", " ", n).strip()
+        if n and len(wanted) < 40:
+            wanted[f"File:{n}.png"] = n
+    if not wanted:
+        return {}
+
+    data = _get({"action": "query", "titles": "|".join(wanted), "prop": "imageinfo",
+                 "iiprop": "url|size", "redirects": 1})
+    if not data:
+        return {}
+    q = data.get("query", {})
+    # The API normalises titles and follows redirects; walk both maps back to
+    # the name that was asked for.
+    alias = {t: t for t in wanted}
+    for step in ("normalized", "redirects"):
+        for m in q.get(step, []):
+            for asked, current in list(alias.items()):
+                if current == m["from"]:
+                    alias[asked] = m["to"]
+    by_title = {p.get("title"): p for p in q.get("pages", {}).values()}
+
+    out = {}
+    for asked, final in alias.items():
+        info = (by_title.get(final) or {}).get("imageinfo")
+        if not info or min(info[0].get("width", 0), info[0].get("height", 0)) < 8:
+            continue
+        name = wanted[asked]
+        out[f"wiki:{name.lower()}"] = {
+            "url": info[0]["url"].split("?")[0], "label": name[:40],
+            "width": info[0]["width"], "height": info[0]["height"], "animated": False,
+        }
+    logger.info("Named images: %d of %d resolved", len(out), len(wanted))
+    return out
+
+
 def fetch_page(title: str) -> Optional[Page]:
     data = _get({"action": "parse", "page": title, "prop": "text|categories",
                  "disabletoc": 1, "disableeditsection": 1, "redirects": 1})
@@ -324,8 +437,31 @@ def fetch_page(title: str) -> Optional[Page]:
     return _extract(data["parse"])
 
 
+def _pick_featured(db_conn) -> Optional[Page]:
+    """An unused article from FEATURED, or None once they run out or fail."""
+    titles = list(FEATURED)
+    random.shuffle(titles)
+    for title in titles[:FEATURED_TRIES]:
+        page = fetch_page(title)
+        if page is None:
+            continue
+        if db_conn is not None and premise_exists(db_conn, page.key):
+            continue
+        logger.info("Terraria page: %r (featured; %d prose chars, %d images, %d animated)",
+                    page.title, page.prose_chars, len(page.images),
+                    sum(i["animated"] for i in page.images))
+        return page
+    return None
+
+
 def pick_page(db_conn) -> Page:
-    """Best unused article out of a few random batches. No LLM involved."""
+    """A well-known subject most of the time, otherwise the best unused
+    article out of a few random batches. No LLM involved either way."""
+    if random.random() < FEATURED_SHARE:
+        page = _pick_featured(db_conn)
+        if page is not None:
+            return page
+
     for batch in range(1, MAX_BATCHES + 1):
         candidates: list[Page] = []
         for r in _random_titles()[:MAX_PAGES_PARSED]:
@@ -370,7 +506,9 @@ def generate_terraria_script(cfg, db_conn, title: Optional[str] = None) -> Scrip
     # The beat count is what the model actually honours; asked for a word
     # total alone, the first real script came back at 243 words against a
     # 300-540 target on all three calls.
-    prompt = PROMPT.format(title=page.title, text=page.text, images=images,
+    angle = random.choice(ANGLES)
+    logger.info("Terraria angle: %r", angle)
+    prompt = PROMPT.format(title=page.title, text=page.text, images=images, angle=angle,
                            words_lo=lo, words_hi=hi,
                            beats_lo=round(lo / WORDS_PER_BEAT), beats_hi=round(hi / WORDS_PER_BEAT))
 
@@ -461,14 +599,22 @@ def _verify(client, page: Page, script: Script) -> Script:
 def _parse(data: dict, cfg, page: Page) -> Script:
     voice = cfg.tts.voices.a
     by_id = {i["id"]: i for i in page.images}
+    raw_beats = [b for b in (data.get("beats") or []) if str(b.get("text", "")).strip()]
+
+    # "wiki:Name" references are resolved in one request and merged in. A name
+    # the wiki has no sprite for simply resolves to nothing, and that beat
+    # keeps the previous picture.
+    refs = [str(b.get("image") or "").strip() for b in raw_beats]
+    by_id.update(resolve_named([r[5:] for r in refs if r.lower().startswith("wiki:")]))
 
     beats: list[Beat] = []
     visuals: list[Optional[BeatVisual]] = []
-    for b in data.get("beats") or []:
+    for b, ref in zip(raw_beats, refs):
         text = str(b.get("text", "")).strip()
-        if not text:
-            continue
-        img = by_id.get(str(b.get("image") or "").strip())
+        key = ref
+        if ref.lower().startswith("wiki:"):
+            key = "wiki:" + re.sub(r"\s+", " ", ref[5:]).strip().lower()
+        img = by_id.get(key)
         beats.append(Beat(text=text, speaker="a", voice=voice))
         visuals.append(BeatVisual(
             url=img["url"], label=img["label"], width=img["width"],

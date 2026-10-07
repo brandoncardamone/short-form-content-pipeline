@@ -373,8 +373,9 @@ def _cover_ms_for(content_format: str, rendered_beats) -> int:
     if content_format == "reddit_story" or content_format in CAPTION_FORMATS:
         target = 500.0   # static for the whole beat — any safe point works
     elif content_format == "terraria":
-        from src.render.terraria_cards import POP_MS
-        target = POP_MS + 250.0   # past the first image's pop-in
+        # The caption fills in word by word, so the only moment the hook is
+        # fully on screen is the end of the first beat (clamped below).
+        target = first_beat_ms
     else:
         from src.render.cards import ENTRY_MS
         target = ENTRY_MS + 200.0   # past the bubble pop-in animation, fully "settled"

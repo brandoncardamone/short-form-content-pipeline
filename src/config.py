@@ -43,6 +43,11 @@ class TTSConfig(BaseModel):
     exaggeration_jitter: float = 0.18
     cfg_weight: float = 0.45            # Chatterbox: reference adherence vs variation
     cfg_weight_jitter: float = 0.12
+    # Check every generated beat (src/tts/qa.py) and re-sample the ones that
+    # come out garbled, clipped, silent or the wrong length. Chatterbox only:
+    # the checks assume a sampling engine where a retake differs.
+    qa_enabled: bool = False
+    qa_max_attempts: int = 3
 
 
 class LLMConfig(BaseModel):
@@ -96,6 +101,9 @@ class BackgroundsConfig(BaseModel):
     # Off for footage with on-screen text: the first Terraria build came out
     # with the boss health readout written backwards.
     allow_flip: bool = True
+    # Weight the random start point toward bright stretches of the clip (see
+    # _background_start_offset). For footage with long dark passages.
+    prefer_bright: bool = False
 
 
 class ExplainerConfig(BaseModel):

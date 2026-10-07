@@ -721,6 +721,35 @@ it is given (every `data/state*.db` by default) rather than only
 `data/state.db`. The two jobs race each other's state push; the retry loop
 absorbs that because they never touch the same file.
 
+**Engagement changes after the first post (2026-10-06).** The first video was
+accurate but flat: a static sentence per beat, a picture change every four or
+five beats, a calm read, and a near-black background. What changed:
+
+- **Captions fill in word by word** (`_base_layers`). There are no word
+  timestamps from the TTS; each word's share of the beat is estimated from its
+  length, which is within a syllable over a two-second beat. Costs a Chromium
+  screenshot per word, so rendering is ~2.3x real time rather than ~1x.
+- **Any named thing can be pictured**, not only the article's own images. The
+  script writes `"image": "wiki:Water Candle"` and `resolve_named` finds
+  `File:Water Candle.png` in one request. First script with it: 18 of 22 beats
+  changed picture, against 5 of 22 before.
+- **Subjects are mostly well-known ones** (`FEATURED`, 65% of videos). The wiki
+  has no page-view data and inbound-link counts are useless (navigation boxes
+  give a paint roller 327), so the list is hand-kept. Add to it freely.
+- **A random angle per video** (`ANGLES`), for the reason `HOOK_SHAPES` exists.
+- **The background start is weighted toward bright footage**
+  (`backgrounds.prefer_bright`). 70% of the clip has mean luma under 15.
+- **The voice is more animated, behind a quality gate.** `src/tts/qa.py` checks
+  every generated beat - energy, clipping, plausible length, no dead gap, and
+  a Whisper transcript that must match the script - and `run_tts` re-records
+  the ones that fail, falling back to calm settings on the last attempt.
+  `tts.qa_enabled` is on for this profile only. **Do not switch it on for the
+  main profile without recalibrating**: text chains are written with typos and
+  slang on purpose, which a transcript match will read as garbled audio.
+  Whisper comes through `transformers`, already a Chatterbox dependency; its
+  ~290MB model is fetched each run unless the `chatterbox-model-v1` cache key
+  is bumped to capture it.
+
 **Known limits:**
 - Both accounts share one Gemini key. Each Terraria video costs 2-4 requests
   against the same 20/day-per-model cap; testing on 2026-10-06 exhausted

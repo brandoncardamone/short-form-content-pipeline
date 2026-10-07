@@ -120,7 +120,8 @@ def build(
 
     voice_path = _build_audio(rendered_beats, work_dir, cfg)
     concat_path = _build_concat(frames_dir, manifest)
-    bg_start = _background_start_offset(background, total_s)
+    bg_start = _background_start_offset(background, total_s,
+                                        prefer_bright=cfg.backgrounds.prefer_bright)
     logger.info("Background clip: %s, starting at %.1fs", background.name, bg_start)
 
     # Verify audio duration matches expected video duration
@@ -178,7 +179,8 @@ def build(
     return out_path
 
 
-def _background_start_offset(background: Path, total_s: float, safety_margin_s: float = 60.0) -> float:
+def _background_start_offset(background: Path, total_s: float, safety_margin_s: float = 60.0,
+                             prefer_bright: bool = False) -> float:
     """Pick a random point within the background clip to start from, rather
     than always playing from its beginning — but only far enough from the end
     that the clip covers the whole video without needing to loop back to its
@@ -198,7 +200,46 @@ def _background_start_offset(background: Path, total_s: float, safety_margin_s: 
     max_start = clip_duration - total_s - safety_margin_s
     if max_start <= 0:
         return 0.0
-    return random.uniform(0, max_start)
+    if not prefer_bright:
+        return random.uniform(0, max_start)
+
+    # Still random, but weighted toward bright footage. Measured on the
+    # Terraria clip, 70% of its 44 minutes is night fights against a black
+    # sky (mean luma under 15 of 255), so a uniform pick gave a near-black
+    # background most of the time. Candidates are drawn uniformly and then
+    # chosen by brightness, so dark stretches stay possible, just rare, and
+    # nothing has to be precomputed or stored per clip.
+    candidates = [random.uniform(0, max_start) for _ in range(BRIGHT_CANDIDATES)]
+    lumas = [_window_luma(background, s, total_s) for s in candidates]
+    weights = [(l + 1.0) ** BRIGHT_POWER for l in lumas]
+    start = random.choices(candidates, weights=weights)[0]
+    logger.info("Background brightness: picked luma %.0f from candidates %s",
+                lumas[candidates.index(start)], [round(l) for l in lumas])
+    return start
+
+
+BRIGHT_CANDIDATES = 12
+BRIGHT_POWER = 1.5       # luma 50 vs luma 5 is ~25x as likely, not infinitely
+
+
+def _window_luma(background: Path, start: float, total_s: float, probes: int = 4) -> float:
+    """Mean brightness (0-255) of the stretch a video would use, from a few
+    tiny frames spread across it. Returns 0 if it cannot be measured, which
+    just makes that candidate unlikely."""
+    values = []
+    for i in range(probes):
+        t = start + total_s * (i + 0.5) / probes
+        try:
+            raw = subprocess.run(
+                ["ffmpeg", "-loglevel", "error", "-ss", f"{t:.2f}", "-i", str(background),
+                 "-frames:v", "1", "-vf", "scale=32:32,format=gray", "-f", "rawvideo", "-"],
+                check=True, capture_output=True, timeout=60,
+            ).stdout
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            continue
+        if raw:
+            values.append(sum(raw) / len(raw))
+    return sum(values) / len(values) if values else 0.0
 
 
 # Why the output encode is constrained the way it is (2026-09-27)

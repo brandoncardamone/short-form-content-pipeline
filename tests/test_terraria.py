@@ -175,3 +175,113 @@ def test_render_durations_match_the_audio_exactly():
     # the picture is drawn inside the panel: something opaque and green there
     px = Image.open(frames[len(frames) // 4].path).getpixel((540, 610))
     assert px[1] > 150 and px[3] == 255
+
+
+# ── word reveal, named images, voice QA, bright backgrounds ──────────────────
+
+def test_split_words_handles_emphasis_shapes():
+    words = R._split_words("Getting hit by *On Fire!* is bad, but *lethal*.")
+    assert [w for w, _ in words] == ["Getting", "hit", "by", "On", "Fire!", "is", "bad,",
+                                     "but", "lethal."]
+    assert [w for w, hi in words if hi] == ["On", "Fire!", "lethal."]
+
+
+def test_words_html_hides_unspoken_words_and_escapes():
+    out = R._words_html([("a<b", False), ("next", True), ("last", False)], upto=1)
+    assert "a&lt;b" in out
+    assert out.count("off") == 1 and "w hi cur" in out
+
+
+def test_resolve_named_maps_redirects_and_drops_unknown(monkeypatch):
+    def fake_get(params):
+        assert params["titles"].count("|") == 1          # duplicates collapsed, 2 files asked
+        return {"query": {
+            "normalized": [{"from": "File:water candle.png", "to": "File:Water candle.png"}],
+            "redirects": [{"from": "File:Water candle.png", "to": "File:Water Candle.png"}],
+            "pages": {
+                "1": {"title": "File:Water Candle.png",
+                      "imageinfo": [{"url": "https://terraria.wiki.gg/images/Water_Candle.png?x1",
+                                     "width": 12, "height": 20}]},
+                "-1": {"title": "File:Not Real.png", "missing": ""},
+            }}}
+    monkeypatch.setattr(T, "_get", fake_get)
+    out = T.resolve_named(["water candle", "Not Real", "water  candle"])
+    assert list(out) == ["wiki:water candle"]
+    assert out["wiki:water candle"]["url"] == "https://terraria.wiki.gg/images/Water_Candle.png"
+
+
+def _tone(path, seconds, sr=24000, amp=0.3, gap=None):
+    import numpy as np
+    import soundfile as sf
+    t = np.arange(int(sr * seconds)) / sr
+    audio = (amp * np.sin(2 * np.pi * 220 * t)).astype("float32")
+    if gap:
+        audio[int(sr * gap[0]): int(sr * gap[1])] = 0.0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(path), audio, sr)
+    return path
+
+
+def test_voice_qa_signal_checks():
+    """The checks that need no speech recogniser. Ten words throughout."""
+    from src.tts import qa
+    text = "one two three four five six seven eight nine ten"
+    d = OUTDIR / "qa"
+    assert qa.check(_tone(d / "good.wav", 3.0), text, transcript=False).ok
+    assert "near-silent" in str(qa.check(_tone(d / "quiet.wav", 3.0, amp=0.001), text, transcript=False))
+    assert "clipped" in str(qa.check(_tone(d / "clip.wav", 3.0, amp=3.0), text, transcript=False))
+    assert "implausible" in str(qa.check(_tone(d / "long.wav", 14.0), text, transcript=False))
+    assert "implausible" in str(qa.check(_tone(d / "short.wav", 0.5), text, transcript=False))
+    assert "dead gap" in str(qa.check(_tone(d / "gap.wav", 4.0, gap=(1.0, 2.5)), text, transcript=False))
+
+
+def test_bad_takes_are_resampled_and_best_is_kept(monkeypatch):
+    """A failing take is re-recorded; the last attempt falls back to the calm
+    delivery; and if nothing passes, the best-scoring take is the one kept."""
+    from types import SimpleNamespace
+    from src.tts import qa, run
+
+    class Engine:
+        def __init__(self):
+            self.deliveries, self.n = [], 0
+        def set_delivery(self, d):
+            self.deliveries.append(dict(d))
+        def synthesize(self, text, voice, out_path):
+            self.n += 1
+            _tone(out_path, 1.0 + self.n)      # each take is identifiable by its length
+
+    cfg = SimpleNamespace(tts=SimpleNamespace(qa_max_attempts=3))
+    beat = Beat(text="some words here", speaker="a", voice="voice_b")
+    delivery = {"speed": 1.3, "exaggeration": 0.8, "cfg_weight": 0.4}
+    raw = OUTDIR / "qa" / "beat_000_raw.wav"
+
+    # second take passes -> stop there
+    verdicts = iter([qa.Verdict(False, 0.2, ["bad"]), qa.Verdict(True, 1.0)])
+    monkeypatch.setattr(qa, "check", lambda p, t: next(verdicts))
+    eng = Engine()
+    assert run._synthesize_checked(eng, beat, raw, delivery, cfg, 0) == (2, True)
+    assert eng.n == 2 and run.SAFE_DELIVERY not in eng.deliveries
+
+    # nothing passes -> three takes, safe delivery on the last, best score kept
+    verdicts = iter([qa.Verdict(False, 0.2, ["bad"]), qa.Verdict(False, 0.7, ["meh"]),
+                     qa.Verdict(False, 0.4, ["bad"])])
+    eng = Engine()
+    assert run._synthesize_checked(eng, beat, raw, delivery, cfg, 0) == (3, False)
+    assert run.SAFE_DELIVERY in eng.deliveries and eng.deliveries[-1] == delivery
+    import soundfile as sf
+    assert abs(sf.info(str(raw)).duration - 3.0) < 0.01          # take 2 (1.0 + 2)
+    assert not list(raw.parent.glob("beat_000_raw_take*.wav"))   # no strays left behind
+
+
+def test_bright_stretches_are_preferred_but_dark_ones_stay_possible(monkeypatch):
+    from src.assemble import build
+    monkeypatch.setattr(build.subprocess, "run",
+                        lambda *a, **k: __import__("types").SimpleNamespace(stdout="1000.0\n"))
+    # First half of the clip is daylight, second half is night.
+    monkeypatch.setattr(build, "_window_luma", lambda bg, s, total: 60.0 if s < 400 else 4.0)
+    starts = [build._background_start_offset(Path("x.mp4"), 90.0, prefer_bright=True)
+              for _ in range(300)]
+    bright = sum(s < 400 for s in starts)
+    assert all(0 <= s <= 850 for s in starts)
+    assert bright > 270          # strongly preferred...
+    assert len({round(s) for s in starts}) > 100   # ...and still random within it
