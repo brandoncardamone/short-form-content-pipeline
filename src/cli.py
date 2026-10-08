@@ -109,12 +109,12 @@ def cmd_generate(args):
         script = _generate_for_format(content_format, cfg, conn)
     except Exception as e:
         # reddit_story is the only format that needs no LLM call at all - it
-        # narrates a real sourced post. So when the free tier's per-DAY cap is
-        # gone (20 requests, and four of the five formats spend one each), fall
-        # back to it rather than losing the post. Waiting cannot clear a daily
-        # cap, so there is nothing else to try. Any other error propagates.
-        from src.generate.llm import _is_daily_quota
-        if content_format == "reddit_story" or not _is_daily_quota(e):
+        # narrates a real sourced post. So when the LLM cannot be reached on
+        # ANY configured model (daily cap gone, or still rate-limited or
+        # overloaded after llm.py's retries and model switching), fall back to
+        # it rather than losing the post. Any other error propagates.
+        from src.generate.llm import is_unavailable
+        if content_format == "reddit_story" or not is_unavailable(e):
             raise
         # Only where reddit_story is a format this account actually posts.
         # A single-format profile (terraria, edu) sets its weight to 0, and
@@ -122,8 +122,8 @@ def cmd_generate(args):
         if cfg.content.weights.reddit_story <= 0:
             raise
         logger.warning(
-            "Gemini daily quota is exhausted - falling back from %s to reddit_story, "
-            "which needs no LLM call.", content_format,
+            "Gemini is unavailable on every model (%s) - falling back from %s to "
+            "reddit_story, which needs no LLM call.", type(e).__name__, content_format,
         )
         content_format = "reddit_story"
         script = _generate_for_format(content_format, cfg, conn)

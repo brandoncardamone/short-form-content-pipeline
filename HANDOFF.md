@@ -608,6 +608,28 @@ clear it.
 
 **When testing generators by hand, remember every call is one of the day's 20.**
 
+**Why the quota kept vanishing (found 2026-10-08).** The better models were
+"already exhausted" at the first call of the day, on days when nothing else
+had used the key, so every script came from the last fallback. The cause was
+the client library, not usage: `google-generativeai` retries a 503 ("model
+overloaded") by itself, about every 10 seconds for up to 600 seconds, and each
+hidden retry is a request against the daily cap. One overloaded call spent a
+model's whole allowance without logging anything - the Actions log shows a
+silent six-minute gap ending in "daily quota exhausted", on both accounts at
+once. This is almost certainly also what the 2026-09-28 "exhausted it during
+testing" above really was.
+
+`llm.py` now passes `retry=None` (`REQUEST_OPTIONS`) so the library sends one
+request per call, and does its own bounded, logged retries: four attempts per
+model, then on to the next model, for overload and per-minute limits as well as
+the daily cap. `cmd_generate` falls back to `reddit_story` whenever the LLM is
+unavailable on every model, not only on the daily cap. **Never remove
+`retry=None`.** The daily window resets at 00:00 UTC (8pm Eastern), not at
+Pacific midnight - read it off `retry_delay` in a per-day 429.
+
+`google-generativeai` is end-of-life (it says so on import). Moving to
+`google.genai` is worth doing, but check its default retry behaviour first.
+
 ### Background clips: there are two, not three
 
 `subway surfers.mp4` and `videoplayback.mp4` are **byte-identical** (same MD5,

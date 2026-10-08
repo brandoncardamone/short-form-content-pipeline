@@ -27,7 +27,21 @@ RATE_LIMIT_SLEEP_S = 65   # just over the 60s window the per-minute quota uses
 # run on 2026-09-25 ("500 Internal error encountered") the same way a 429 did.
 # These clear in seconds rather than needing a quota window, so they get their
 # own much shorter backoff.
-TRANSIENT_SLEEP_S = 5
+TRANSIENT_SLEEP_S = 10
+
+# retry=None switches OFF the client library's own retry loop, and that is the
+# whole point. Left at its default, the library retries a 503 ("model
+# overloaded") by itself, roughly every 10 seconds for up to 600 seconds, and
+# every one of those hidden retries is a request against the 20-per-day cap. A
+# single overloaded call therefore spent a model's entire daily allowance
+# without logging a line: on 2026-10-08 both accounts' first call of the day
+# hung silently for six minutes and came back "daily quota exhausted", on a day
+# when nothing else had used the key. It is why the better models were always
+# "already used up" and scripts kept coming from the last fallback.
+#
+# Retrying is done by _complete_one instead: a handful of attempts, each one
+# logged, then on to the next model. The timeout bounds a call that hangs.
+REQUEST_OPTIONS = {"retry": None, "timeout": 120}
 
 
 class LLMClient:
@@ -61,21 +75,28 @@ class GeminiClient(LLMClient):
         return self._models[self._idx]
 
     def complete(self, prompt: str, temperature: float = 0.9) -> str:
-        """Try each configured model in turn, moving on only when one's DAILY
-        cap is gone. Per-minute limits and transient 5xx are handled within a
-        model by _complete_one, since those clear on their own - switching
-        models for those would waste the next model's allowance too."""
+        """Try each configured model in turn.
+
+        Per-minute limits and transient 5xx are first retried within a model
+        by _complete_one, a bounded number of times, since those usually clear
+        on their own. A model is abandoned for the next one when its DAILY cap
+        is gone, or when it is still overloaded or rate-limited after those
+        retries - an overloaded model stays overloaded for minutes, and the
+        next model has its own capacity and its own quota. Only when the last
+        model fails does the error reach the caller."""
         while True:
             try:
                 return self._complete_one(self._model_name, prompt, temperature)
             except Exception as e:
-                if _is_daily_quota(e) and self._idx + 1 < len(self._models):
-                    exhausted = self._model_name
+                recoverable = (_is_daily_quota(e) or _is_rate_limit(e)
+                               or _is_transient_server_error(e))
+                if recoverable and self._idx + 1 < len(self._models):
+                    failed = self._model_name
                     self._idx += 1
                     logger.warning(
-                        "Gemini daily cap reached on %s - switching to %s "
-                        "(the cap is per model, so this is a fresh allowance)",
-                        exhausted, self._model_name,
+                        "Gemini %s on %s - switching to %s (quota and capacity are per model)",
+                        "daily cap reached" if _is_daily_quota(e) else "still unavailable after retries",
+                        failed, self._model_name,
                     )
                     continue
                 raise
@@ -90,7 +111,7 @@ class GeminiClient(LLMClient):
         )
         for attempt in range(1, RATE_LIMIT_ATTEMPTS + 1):
             try:
-                response = model.generate_content(prompt)
+                response = model.generate_content(prompt, request_options=REQUEST_OPTIONS)
                 return response.text
             except Exception as e:
                 if _is_rate_limit(e):
@@ -167,6 +188,13 @@ def _is_daily_quota(exc: Exception) -> bool:
     GenerateRequestsPerMinutePerProjectPerModel-FreeTier vs ...PerDay..."""
     text = str(exc).lower()
     return "perday" in text.replace(" ", "") or "per day" in text
+
+
+def is_unavailable(exc: Exception) -> bool:
+    """True when the LLM could not be reached at all - quota gone, rate-limited
+    or overloaded on every configured model - as opposed to having answered
+    badly. Callers use it to decide whether a non-LLM fallback is appropriate."""
+    return _is_daily_quota(exc) or _is_rate_limit(exc) or _is_transient_server_error(exc)
 
 
 def load_client(cfg) -> LLMClient:
