@@ -165,13 +165,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # --clobber on every download: assets/music/soft_ambient.wav is
+          # tracked in git, so it is already on disk after checkout, and gh
+          # refuses to overwrite an existing file. Without the flag this step
+          # failed on its last line every run - after pulling 493MB of footage,
+          # and before the cache could be saved, so the next run did it again.
+          # That cost the terraria account its whole first day (2026-10-07).
           mkdir -p assets/backgrounds/terraria assets/voices assets/music
           gh release download assets-terraria-v1 --repo "${{ github.repository }}" \
-            --pattern "*.mp4" --dir assets/backgrounds/terraria
+            --pattern "*.mp4" --dir assets/backgrounds/terraria --clobber
           gh release download assets-v1 --repo "${{ github.repository }}" \
-            --pattern "chatterbox_ref_*.wav" --dir assets/voices
+            --pattern "chatterbox_ref_*.wav" --dir assets/voices --clobber
           gh release download assets-v1 --repo "${{ github.repository }}" \
-            --pattern "soft_ambient.wav" --dir assets/music
+            --pattern "soft_ambient.wav" --dir assets/music --clobber
 
       # Large binaries (background clips, TTS voice references, ambient
       # music) live as attachments on the "assets-v1" GitHub Release instead
