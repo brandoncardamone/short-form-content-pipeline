@@ -76,7 +76,7 @@ def test_an_overloaded_model_costs_a_bounded_number_of_requests(client):
     of requests on a model before moving to the next."""
     c = client({"a": [OVERLOADED], "b": ["from b"]})
     assert c.complete("p") == "from b"
-    assert [m for m, _ in c._genai.calls] == ["a"] * llm.RATE_LIMIT_ATTEMPTS + ["b"]
+    assert [m for m, _ in c._genai.calls] == ["a"] * llm.TRANSIENT_ATTEMPTS + ["b"]
 
 
 def test_a_blip_is_retried_on_the_same_model(client):
@@ -113,3 +113,10 @@ def test_a_real_error_is_not_retried_or_mistaken_for_unavailability(client):
         c.complete("p")
     assert len(c._genai.calls) == 1
     assert not llm.is_unavailable(bad_key)
+
+
+def test_a_timeout_moves_on_without_a_second_try(client):
+    timed_out = RuntimeError("504 Deadline expired before operation could complete.")
+    c = client({"a": [timed_out], "b": ["from b"]})
+    assert c.complete("p") == "from b"
+    assert [m for m, _ in c._genai.calls] == ["a", "b"]

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <style>{{ css }}</style>
 </head>
-<body style="--highlight: {{ highlight }}">
+<body class="{{ mode }}" style="--highlight: {{ highlight }}">
   <div id="title">{{ title }}</div>
   <div id="panel"{% if not has_media %} class="empty"{% endif %}>
     <div id="media"></div>

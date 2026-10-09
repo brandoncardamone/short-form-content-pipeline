@@ -94,7 +94,7 @@ BASE_TAGS = ["terraria", "terrariatips", "gaming"]
 # the rest stay random so the account still turns up things nobody expects.
 # A title that does not resolve or is too thin is skipped, so a wrong name
 # here costs one wiki request and nothing else.
-FEATURED_SHARE = 0.65
+FEATURED_SHARE = 0.8
 FEATURED_TRIES = 6
 FEATURED = [
     # bosses and events
@@ -126,24 +126,64 @@ FEATURED = [
     "Shadow Orb", "Mimics", "Truffle Worm",
     "Guide Voodoo Doll", "Clothier Voodoo Doll", "Angler", "Traveling Merchant",
     "Goblin Tinkerer", "Modifiers", "Journey Mode", "Secret world seeds", "Wire",
+    # subjects with a story, a secret or an oddity behind them - added after
+    # "Secret world seeds" (how the community cracked them) drew ~11x the views
+    # of a plain description of a biome. See ANGLES.
+    "Drunk", "Remix", "Celebration Mk 10", "Zenith (seed)", "The Constant", "Lore",
+    "Developer items", "Terraria: Otherworld", "Crossover content", "Unobtainable features",
+    "Red Potion", "Moon phase", "Tombstones", "Graveyard", "Party", "Slime Rain",
+    "NPC spawning", "Bestiary", "Statues", "Traps", "Tim", "Rune Wizard", "Doctor Bones",
+    "Pinky", "Nymph", "Dungeon Spirit", "Coin Gun", "Clentaminator", "Rod of Harmony",
+    "Portal Gun", "Gravity Globe", "Void Bag", "Piggy Bank",
 ]
 
 # One is drawn per video. Left to itself the model writes the same explainer
 # every time ("X is a Y. You get it by Z."), and a feed of identical videos is
 # what flattened the other account - see HOOK_SHAPES in generate/textchain.py.
 # Add angles here rather than rewriting the prompt.
+#
+# Weighted, on thin evidence that is worth being honest about. Two videos
+# posted: a description of a place (The Aether, ~130 views, 4 likes) and a
+# story told as myth-versus-reality (how the community cracked the secret
+# seeds, ~1,430 views, 21 likes). The second also had a famous subject, a
+# midday slot and the upgraded visuals, so the angle is one suspect among
+# several - but it is the cheapest one to lean on, and the story/secret angles
+# are weighted up accordingly. Revisit with `monitor` once there are ten posts;
+# two data points do not justify removing the others.
 ANGLES = [
-    "the mistake most players make with this, and what to do instead",
-    "is it actually worth getting? Give a verdict and defend it",
-    "the hidden mechanic here that the game never explains",
-    "the fastest or earliest way to get this, step by step",
-    "things almost nobody knows about this, most surprising first",
-    "how this compares to the obvious alternative, and when each one wins",
-    "why veterans treat this differently from new players",
-    "the one situation where this is far stronger than it looks",
-    "myth versus reality: what players assume about this that is wrong",
-    "a short survival guide: how this kills or wastes the time of unprepared players",
+    ("myth versus reality: what players assume about this that is wrong", 4),
+    ("the story behind this: how it was discovered, what the developers did, or what the "
+     "community had to work out", 4),
+    ("the hidden mechanic here that the game never explains", 3),
+    ("things almost nobody knows about this, most surprising first", 3),
+    ("the mistake most players make with this, and what to do instead", 2),
+    ("the one situation where this is far stronger than it looks", 2),
+    ("is it actually worth getting? Give a verdict and defend it", 1),
+    ("the fastest or earliest way to get this, step by step", 1),
+    ("how this compares to the obvious alternative, and when each one wins", 1),
+    ("why veterans treat this differently from new players", 1),
+    ("a short survival guide: how this kills or wastes the time of unprepared players", 1),
 ]
+
+# How the first two beats are built. The best-performing video opened "Most
+# players think X" / "In reality, Y": a belief the viewer holds, then broken.
+# Weighted toward that shape without making it the only one, because a feed
+# where every video opens identically is its own problem (see HOOK_SHAPES in
+# generate/textchain.py, where 25 of 27 videos had come to open on "why").
+HOOKS = [
+    ("Beat 1 states something players believe, assume or were told about this. Beat 2 "
+     "overturns it flatly. Do not always phrase it as 'most players think' - vary the wording.", 4),
+    ("Beat 1 is the single strangest true fact here, stated plainly with its specific detail "
+     "or number. Beat 2 says why that is not a mistake.", 2),
+    ("Beat 1 is the consequence - what happens to a player who does not know this. Beat 2 "
+     "names the cause.", 2),
+    ("Beat 1 is a question a player has actually wondered about this. Beat 2 answers it in a "
+     "way they would not expect.", 1),
+]
+
+
+def _weighted(options) -> str:
+    return random.choices([o for o, _ in options], weights=[w for _, w in options])[0]
 
 PROMPT = """You write narration for a short vertical video about ONE thing from the game Terraria.
 The video shows the item's sprite or a clip of it in use, with big captions, over gameplay footage.
@@ -158,9 +198,15 @@ IMAGES AVAILABLE (use the id to show one):
 {images}
 
 ANGLE FOR THIS VIDEO: {angle}
-Build the whole script around that angle. It decides the hook and what you leave out.
+Build the whole script around that angle. It decides what you leave out.
+
+HOW IT OPENS: {hook}
 
 What to write:
+- TELL IT, do not describe it. If the article contains a history, a discovery, a developer
+  decision, a community effort, or a chain of cause and effect, that is the video: follow it in
+  order, with the specific names, numbers and durations the article gives. A sequence of events
+  holds attention; a list of properties does not.
 - Do NOT read out stats. Find what is genuinely interesting or useful here: what it is actually
   good for, how to get it faster or earlier, a non-obvious interaction, a mistake players make,
   how it compares to the obvious alternative, an odd bit of trivia. Mention a number only when
@@ -169,10 +215,10 @@ What to write:
   version history. If the article is thin, write a shorter script rather than padding.
 - Where the article gives different values per platform, use the Desktop/Console/Mobile ones and
   ignore Old-gen console and 3DS.
-- Open on the most surprising or useful fact. Never open with "did you know", "in Terraria", or
-  by naming the subject and saying what category it is.
-- Then give it a shape: what it is in one line, how you get it, why it matters, the part most
-  players miss, and a verdict - is it worth it, and when.
+- Never open with "did you know", "in Terraria", or by naming the subject and saying what
+  category it is.
+- After the opening, each beat should make the viewer need the next one: raise a question, then
+  answer it a beat or two later. End on a payoff or a verdict, before the closing question.
 - Plain spoken English, second person, contractions. No "furthermore", no "in conclusion".
 - LENGTH MATTERS: write {beats_lo}-{beats_hi} beats, {words_lo}-{words_hi} words in total. Count
   them. Scripts that come back short are rejected. Reach the length by covering more of the
@@ -193,8 +239,15 @@ What to write:
   The first beat must have an image, and it should be the subject itself.
 - The last beat is a question to the viewer that invites a comment.
 
+- Also write "cover": the 2-5 words shown huge on the opening title card and on the video's
+  thumbnail. It must make someone want the answer WITHOUT giving it away, and must be true to
+  the script. Name the subject if it is famous. Wrap the one key word in *asterisks*. No
+  hashtags, no emoji, no full stop. Examples of the register: "The seeds nobody could *crack*",
+  "Why the Nurse *charges* more", "Zenith is not the *best* sword".
+
 Output valid JSON only, no markdown fences:
 {{
+  "cover": "2-5 words for the title card",
   "hook": "the first beat's text, without asterisks",
   "tags": ["tag1", "tag2", "tag3"],
   "beats": [
@@ -506,9 +559,9 @@ def generate_terraria_script(cfg, db_conn, title: Optional[str] = None) -> Scrip
     # The beat count is what the model actually honours; asked for a word
     # total alone, the first real script came back at 243 words against a
     # 300-540 target on all three calls.
-    angle = random.choice(ANGLES)
-    logger.info("Terraria angle: %r", angle)
-    prompt = PROMPT.format(title=page.title, text=page.text, images=images, angle=angle,
+    angle, hook = _weighted(ANGLES), _weighted(HOOKS)
+    logger.info("Terraria angle: %r | hook: %r", angle, hook[:60])
+    prompt = PROMPT.format(title=page.title, text=page.text, images=images, angle=angle, hook=hook,
                            words_lo=lo, words_hi=hi,
                            beats_lo=round(lo / WORDS_PER_BEAT), beats_hi=round(hi / WORDS_PER_BEAT))
 
@@ -596,6 +649,27 @@ def _verify(client, page: Page, script: Script) -> Script:
     })
 
 
+def _is_strip(width: int, height: int) -> bool:
+    """A banner or column: too far from square to fill the picture panel."""
+    if not width or not height:
+        return False
+    return not 0.4 <= width / height <= 2.5
+
+
+def _hero_image(page: Page) -> Optional[dict]:
+    """The page image best suited to the title card: a still that is not a
+    strip, the largest such (a boss sprite beats a 16px icon). Falls back to
+    the page's first image so there is always a picture."""
+    # Capped at 600px: anything larger on this wiki is a screenshot or an
+    # infographic full of small text, not a sprite.
+    stills = [i for i in page.images
+              if not i["animated"] and not _is_strip(i["width"], i["height"])
+              and max(i["width"], i["height"]) <= 600]
+    if stills:
+        return max(stills, key=lambda i: min(i["width"], i["height"]))
+    return page.images[0] if page.images else None
+
+
 def _parse(data: dict, cfg, page: Page) -> Script:
     voice = cfg.tts.voices.a
     by_id = {i["id"]: i for i in page.images}
@@ -623,15 +697,25 @@ def _parse(data: dict, cfg, page: Page) -> Script:
 
     if len(beats) < 8:
         raise ValueError(f"Only {len(beats)} usable beats")
-    if visuals[0] is None:
-        # The subject's own sprite is the first image on the page.
-        first = page.images[0]
-        visuals[0] = BeatVisual(url=first["url"], label=first["label"], width=first["width"],
-                                height=first["height"], animated=first["animated"])
+    # The first picture is also the one on the title card and the reel's cover,
+    # so it must be one that reads at a glance. Events and biomes lead with a
+    # wide, dark "screenshot banner" that is a smudge at that size.
+    if visuals[0] is None or _is_strip(visuals[0].width, visuals[0].height):
+        hero = _hero_image(page)
+        if hero is not None:
+            visuals[0] = BeatVisual(url=hero["url"], label=hero["label"], width=hero["width"],
+                                    height=hero["height"], animated=hero["animated"])
 
     hook = strip_emphasis(str(data.get("hook") or beats[0].text)).strip()
     tags = [str(t) for t in (data.get("tags") or [])]
+
+    # The title card falls back to the subject's name: always true, never a
+    # spoiler, and better than a card with a sentence crammed onto it.
+    cover = re.sub(r"\s+", " ", str(data.get("cover") or "")).strip().rstrip(".")
+    if not 1 <= len(strip_emphasis(cover).split()) <= 6 or len(cover) > 48:
+        cover = page.title
     return Script(
+        cover_line=cover,
         beats=beats,
         title=page.title,
         hook=hook,

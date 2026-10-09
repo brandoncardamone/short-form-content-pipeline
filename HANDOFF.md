@@ -608,24 +608,38 @@ clear it.
 
 **When testing generators by hand, remember every call is one of the day's 20.**
 
-**Why the quota kept vanishing (found 2026-10-08).** The better models were
-"already exhausted" at the first call of the day, on days when nothing else
-had used the key, so every script came from the last fallback. The cause was
-the client library, not usage: `google-generativeai` retries a 503 ("model
-overloaded") by itself, about every 10 seconds for up to 600 seconds, and each
-hidden retry is a request against the daily cap. One overloaded call spent a
-model's whole allowance without logging anything - the Actions log shows a
-silent six-minute gap ending in "daily quota exhausted", on both accounts at
-once. This is almost certainly also what the 2026-09-28 "exhausted it during
-testing" above really was.
+**The quota vanishing: one cause fixed, one still unexplained (2026-10-08).**
+The better models are "already exhausted" at the first call of the day, so
+scripts have been coming from the last fallback.
 
-`llm.py` now passes `retry=None` (`REQUEST_OPTIONS`) so the library sends one
-request per call, and does its own bounded, logged retries: four attempts per
-model, then on to the next model, for overload and per-minute limits as well as
-the daily cap. `cmd_generate` falls back to `reddit_story` whenever the LLM is
-unavailable on every model, not only on the daily cap. **Never remove
-`retry=None`.** The daily window resets at 00:00 UTC (8pm Eastern), not at
-Pacific midnight - read it off `retry_delay` in a per-day 429.
+*Fixed:* `google-generativeai` retries a 503 ("model overloaded") by itself,
+about every 10 seconds for up to 600 seconds (it is in the library's default
+retry config), and each hidden retry is a request. The Actions log showed a
+silent six-minute gap ending in "daily quota exhausted" on both accounts at
+once. `llm.py` now passes `retry=None` (`REQUEST_OPTIONS`) so the library sends
+one request per call, and does its own bounded, logged retries: one retry for
+an overloaded model, up to four waits for a per-minute limit, then on to the
+next model. **Never remove `retry=None`.**
+
+*NOT explained:* with that fix in place, at 00:05 UTC - five minutes after the
+daily reset - `gemini-3.6-flash` and `gemini-3.8-flash` both reported the
+per-day cap of 20 as gone for the next 23.9 hours, after one successful request
+to 3.6 and one 503 from 3.8, with no workflow run having touched Gemini since
+the reset. So the hidden retries were real but were not the whole story. Ruled
+out: the key is not in this repo's history, the state databases or the Actions
+logs. Not ruled out: the same key or Google project being used somewhere else;
+Google counting these two models differently from what the error text says.
+**The usage page named in the error (https://ai.dev/rate-limit) shows requests
+per model per day and would settle it - only the account owner can open it.**
+If it shows requests this pipeline did not make, rotate the key.
+
+*Mitigation:* six fallback models instead of two (`llm.fallback_models`), all
+confirmed live on this key. `gemini-3.5-flash` took four requests in a row
+without complaint, so the per-day accounting is normal there.
+`cmd_generate` falls back to `reddit_story` whenever the LLM is unavailable on
+every model, not only on the daily cap. The daily window resets at 00:00 UTC
+(8pm Eastern), not at Pacific midnight - read it off `retry_delay` in a
+per-day 429.
 
 `google-generativeai` is end-of-life (it says so on import). Moving to
 `google.genai` is worth doing, but check its default retry behaviour first.
@@ -771,6 +785,29 @@ five beats, a calm read, and a near-black background. What changed:
   Whisper comes through `transformers`, already a Chatterbox dependency; its
   ~290MB model is fetched each run unless the `chatterbox-model-v1` cache key
   is bumped to capture it.
+
+**After the second post (2026-10-08): title card, and leaning on what worked.**
+"Secret world seeds" drew ~1,430 views and 21 likes against ~130 and 4 for "The
+Aether". The two differ in subject, angle, visuals, voice and posting time, so
+nothing is proven; the clearest difference in the scripts themselves is that
+the second TOLD A STORY (how the community cracked the seeds) and opened on a
+belief then overturned ("Most players think... In reality..."), while the
+first described a place. It had only 5 pictures, so pictures were not it.
+
+- `ANGLES` and the new `HOOKS` are weighted toward story, myth-versus-reality
+  and the belief-then-overturned opening, without removing the alternatives.
+  The prompt now says to tell a sequence of events where the article has one.
+- `FEATURED_SHARE` is 0.8 and `FEATURED` gained ~35 subjects with a story or
+  a secret behind them.
+- **Opening title card** (`_cover_layer`, `body.cover` in terraria.css): a few
+  huge words (`Script.cover_line`, written by the LLM, falling back to the
+  subject's name) over a large picture, for the first ~1.3s. It is laid over
+  the start of the first beat, not placed before it, so the narration still
+  starts at 0:00. `_cover_ms_for` points the reel's cover frame at it. All of
+  it sits between y=400 and y=1500 because grids crop covers to the centre.
+
+Judge these against `monitor`'s per-post numbers after about ten posts, not
+after each one.
 
 **Known limits:**
 - Both accounts share one Gemini key. Each Terraria video costs 2-4 requests

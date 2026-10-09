@@ -233,7 +233,8 @@ def cmd_render(args):
             from src.render.terraria_cards import TerrariaRenderer
             renderer = TerrariaRenderer(outdir=frames_dir, title=script.title,
                                         media_dir=work_dir / "media")
-            frames = renderer.render_script(script.beats, script.visuals, durations_ms)
+            frames = renderer.render_script(script.beats, script.visuals, durations_ms,
+                                            cover_line=script.cover_line)
         else:
             messages = [{"speaker": b.speaker, "text": b.text} for b in script.beats]
             renderer = CardRenderer(
@@ -303,7 +304,9 @@ def cmd_assemble(args):
 
     try:
         build(frames_dir, manifest_path, bg_clip, rendered_beats, out_path, cfg, work_dir=work_dir)
-        cover_ms = _cover_ms_for(row["content_format"], rendered_beats)
+        script_data = json.loads(row["script_json"])
+        has_title_card = bool(script_data.get("cover_line") and (script_data.get("visuals") or [None])[0])
+        cover_ms = _cover_ms_for(row["content_format"], rendered_beats, has_title_card)
         update_video(conn, vid_id, mp4_path=str(out_path), bg_clip=str(bg_clip), cover_ms=cover_ms, status="assembled")
         logger.info("Assembled → %s (cover_ms=%d)", out_path, cover_ms)
     except Exception as e:
@@ -364,12 +367,20 @@ def _enforce_mobile_sync_cap(sync_dir: Path, cap_bytes: int) -> None:
         i += 1
 
 
-def _cover_ms_for(content_format: str, rendered_beats) -> int:
+def _cover_ms_for(content_format: str, rendered_beats, has_title_card: bool = False) -> int:
     """Pick a millisecond offset into the video for the platform-facing cover/
     thumbnail frame — clicking through in-feed depends on this, and a mid-
     animation frame (e.g. a chat bubble half-popped-in) looks broken as a still.
     Clamped to land safely within the first beat, before the second one starts."""
     first_beat_ms = rendered_beats[0].duration_ms + rendered_beats[0].gap_ms
+    if content_format == "terraria" and has_title_card:
+        # The opening title card IS the designed cover. Mirror the renderer's
+        # own arithmetic for how long the card stays up, and land inside it
+        # once the picture has finished popping in.
+        from src.render.terraria_cards import COVER_FRAME_MS, COVER_MIN_REMAINDER_MS, COVER_MS
+        card_ms = min(COVER_MS, first_beat_ms - COVER_MIN_REMAINDER_MS)
+        if card_ms > 300:
+            return int(min(COVER_FRAME_MS, card_ms - 100))
     if content_format == "reddit_story" or content_format in CAPTION_FORMATS:
         target = 500.0   # static for the whole beat — any safe point works
     elif content_format == "terraria":

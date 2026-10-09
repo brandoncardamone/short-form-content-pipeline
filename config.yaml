@@ -28,9 +28,20 @@ llm:
   # every non-Reddit format then fell back to reddit_story, and 7 of the 10
   # videos after the "content variety" work were still Reddit stories. The
   # variety was not reaching production at all.
+  #
+  # Widened 2026-10-08 from two fallbacks to six, all confirmed live on this
+  # key that day. In practice 3.6 and 3.8 report their daily cap as gone within
+  # minutes of the 00:00 UTC reset, after a single request from this pipeline
+  # and with nothing else of ours running - cause unknown, see HANDOFF.md - and
+  # 3.7 is often overloaded. That left ONE working model writing every script,
+  # with nothing behind it. Strongest first; the lite models are the floor.
   fallback_models:
     - gemini-3.8-flash
+    - gemini-3.7-flash
+    - gemini-3.5-flash
+    - gemini-3-flash-preview
     - gemini-3.1-flash-lite
+    - gemini-3.5-flash-lite
   model: gemini-3.6-flash   # gemini-2.5-flash no longer available to this account.
                              # IMPORTANT: this model is itself capped at 20 requests/DAY on the
                              # free tier (confirmed live 2026-09-28 by exhausting it:

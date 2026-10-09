@@ -58,6 +58,13 @@ FONT_STEP_PX = 4
 
 WORD_PAUSE_CHARS = 2     # per-word allowance when estimating word timing
 
+# Opening title card. Long enough to read four words, short enough that the
+# word-by-word caption takes over while the hook is still being spoken.
+COVER_MS = 1300
+COVER_MIN_REMAINDER_MS = 400   # of the first beat left for the normal layout
+COVER_FRAME_MS = 600           # where the reel's cover frame is taken: card settled
+COVER_MAX_FONT_PX = 148
+
 
 def _split_words(text: str) -> list[tuple[str, bool]]:
     """[(word, emphasised)] with the *asterisk* markers consumed. Emphasis may
@@ -179,7 +186,10 @@ class TerrariaRenderer:
         return dest
 
     def _media_for(self, visual, box_w: int, box_h: int) -> Optional[_Media]:
-        if visual.url not in self._cache:
+        # Keyed on the box too: the title card shows the same picture as the
+        # first beat, but fitted to a larger panel.
+        key = (visual.url, box_w, box_h)
+        if key not in self._cache:
             media = None
             path = self._download(visual.url)
             if path is not None:
@@ -187,17 +197,42 @@ class TerrariaRenderer:
                     media = _load_media(path, box_w, box_h)
                 except (OSError, ValueError) as e:
                     logger.warning("Could not decode %s: %s", visual.url, e)
-            self._cache[visual.url] = media
-        return self._cache[visual.url]
+            self._cache[key] = media
+        return self._cache[key]
 
     # ── static layer ─────────────────────────────────────────────────────────
 
-    def _render_at(self, page, html_text, font_size: int, label: str, has_media: bool):
+    def _render_at(self, page, html_text, font_size: int, label: str, has_media: bool,
+                   mode: str = ""):
         from markupsafe import Markup
         page.set_content(self.tpl.render(
             css=Markup(self.css), title=self.title, label=label, has_media=has_media,
             html_text=Markup(html_text), font_size=font_size, highlight=self.highlight,
+            mode=mode,
         ))
+
+    def _cover_layer(self, page, cover_line: str):
+        """The opening title card: a few huge words over a big picture of the
+        subject. Returns (layer, media box) in the card's own layout.
+
+        It is the first thing on screen and also the frame used as the reel's
+        cover, so it has to work as a still. Everything that matters sits in
+        the middle of the frame: profile grids crop the cover to its centre.
+        """
+        words = _split_words(cover_line)
+        html_text = _words_html(words, len(words) - 1, mark_current=False)
+        for size in range(COVER_MAX_FONT_PX, MAX_FONT_PX - 1, -FONT_STEP_PX):
+            self._render_at(page, html_text, size, self.title, True, mode="cover")
+            overflows = page.evaluate(
+                "() => { const c = document.getElementById('caption').getBoundingClientRect();"
+                " const s = document.getElementById('stage').getBoundingClientRect();"
+                " return c.height > s.height + 1 || c.width > s.width + 1; }"
+            )
+            if not overflows:
+                break
+        box = self._box(page, "media")
+        png = page.screenshot(omit_background=True)
+        return Image.open(io.BytesIO(png)).convert("RGBA"), box
 
     def _base_layers(self, page, text: str, label: str, has_media: bool):
         """Static layers for one beat: one per word, with the caption revealed
@@ -245,13 +280,18 @@ class TerrariaRenderer:
 
     # ── public ───────────────────────────────────────────────────────────────
 
-    def render_script(self, beats, visuals, beat_durations_ms) -> list[Frame]:
+    def render_script(self, beats, visuals, beat_durations_ms, cover_line=None) -> list[Frame]:
         """
         beats: list[Beat] (uses .text; *emphasis* markers are honoured)
         visuals: list[BeatVisual | None], same length; None keeps the previous picture
         beat_durations_ms: audio duration per beat, same length
+        cover_line: a few words for the opening title card, or None for no card
 
         Returns list[Frame] in playback order, several per beat.
+
+        The title card is laid OVER the start of the first beat rather than
+        placed before it: the narration starts at 0:00 either way, so the card
+        costs no time and the hook is heard while it is on screen.
         """
         visuals = visuals or [None] * len(beats)
         assert len(beats) == len(visuals) == len(beat_durations_ms)
@@ -272,6 +312,16 @@ class TerrariaRenderer:
             mx, my, mw, mh = self._box(page, "media")
             px, py, pw, ph = self._box(page, "progress")
 
+            # Title card, shown until cover_until. Needs a picture: without one
+            # it would be words on an empty panel, so it is skipped instead.
+            cover_layer = cover_media = cover_box = None
+            cover_until = 0.0
+            if cover_line and visuals[0] is not None:
+                cover_layer, cover_box = self._cover_layer(page, cover_line)
+                cover_media = self._media_for(visuals[0], cover_box[2], cover_box[3])
+                if cover_media is not None:
+                    cover_until = max(0.0, min(COVER_MS, beat_durations_ms[0] - COVER_MIN_REMAINDER_MS))
+
             current: Optional[_Media] = None
             label = ""
             changed_at = 0.0     # video time at which `current` appeared
@@ -282,7 +332,9 @@ class TerrariaRenderer:
                 if v is not None:
                     media = self._media_for(v, mw, mh)
                     if media is not None and media is not current:
-                        current, label, changed_at = media, v.label, now
+                        # After the card, the first picture pops into the
+                        # normal panel as the layout switches.
+                        current, label, changed_at = media, v.label, max(now, cover_until)
 
                 layers, shares = self._base_layers(page, beat.text, label, current is not None)
 
@@ -290,16 +342,21 @@ class TerrariaRenderer:
                 frame_ms = beat_durations_ms[i] / n
                 for k in range(n):
                     t = now + k * frame_ms
-                    # The word being spoken at the middle of this frame.
-                    progress = (k + 0.5) / n
-                    word = next((w for w, s in enumerate(shares) if progress < s), len(shares) - 1)
-                    canvas = layers[word].copy()
-                    if current is not None:
-                        self._paste_media(canvas, current, t - changed_at, (mx, my, mw, mh))
-                    fill = int(pw * min(1.0, (t + frame_ms) / total_ms))
-                    if fill >= ph:
-                        ImageDraw.Draw(canvas).rounded_rectangle(
-                            (px, py, px + fill, py + ph), radius=ph // 2, fill=self.highlight)
+                    if t < cover_until:
+                        canvas = cover_layer.copy()
+                        self._paste_media(canvas, cover_media, t, cover_box)
+                    else:
+                        # The word being spoken at the middle of this frame.
+                        progress = (k + 0.5) / n
+                        word = next((w for w, s in enumerate(shares) if progress < s),
+                                    len(shares) - 1)
+                        canvas = layers[word].copy()
+                        if current is not None:
+                            self._paste_media(canvas, current, t - changed_at, (mx, my, mw, mh))
+                        fill = int(pw * min(1.0, (t + frame_ms) / total_ms))
+                        if fill >= ph:
+                            ImageDraw.Draw(canvas).rounded_rectangle(
+                                (px, py, px + fill, py + ph), radius=ph // 2, fill=self.highlight)
                     out = self.outdir / f"f{idx:05d}.png"
                     canvas.save(out, compress_level=1)
                     frames.append(Frame(out, frame_ms))

@@ -28,6 +28,7 @@ RATE_LIMIT_SLEEP_S = 65   # just over the 60s window the per-minute quota uses
 # These clear in seconds rather than needing a quota window, so they get their
 # own much shorter backoff.
 TRANSIENT_SLEEP_S = 10
+TRANSIENT_ATTEMPTS = 2
 
 # retry=None switches OFF the client library's own retry loop, and that is the
 # whole point. Left at its default, the library retries a 503 ("model
@@ -129,6 +130,15 @@ class GeminiClient(LLMClient):
                 elif _is_transient_server_error(e):
                     wait_s = TRANSIENT_SLEEP_S * attempt
                     what = "transient server error"
+                    # One retry only. An overloaded model tends to stay
+                    # overloaded for minutes and can take over a minute just
+                    # to say so, and there are other models to move to. A
+                    # timeout gets no retry at all: it has already cost the
+                    # full REQUEST_OPTIONS timeout once (a second try on
+                    # gemini-3-flash-preview cost another two minutes for
+                    # nothing on 2026-10-08).
+                    if attempt >= TRANSIENT_ATTEMPTS or _is_timeout(e):
+                        raise
                 else:
                     raise
                 if attempt == RATE_LIMIT_ATTEMPTS:
@@ -180,6 +190,16 @@ def _is_transient_server_error(exc: Exception) -> bool:
             "Internal error encountered",
         )
     )
+
+
+def _is_timeout(exc: Exception) -> bool:
+    try:
+        from google.api_core.exceptions import DeadlineExceeded
+        if isinstance(exc, DeadlineExceeded):
+            return True
+    except ImportError:
+        pass
+    return "504 Deadline" in str(exc)
 
 
 def _is_daily_quota(exc: Exception) -> bool:

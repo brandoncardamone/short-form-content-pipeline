@@ -127,6 +127,36 @@ html, body {
     0 12px 34px rgba(0, 0, 0, .45);
 }
 
+/* ── Opening title card (body.cover) ─────────────────────────────────────────
+ * Same elements, rearranged: the cover line huge on top, a bigger picture
+ * panel under it, no subject title bar and no progress track. Shown for the
+ * first second or so, and it is the frame Instagram uses as the reel's cover.
+ *
+ * Everything sits between y=400 and y=1500. Profile and Explore grids crop a
+ * cover to its centre, so anything nearer the top or bottom edge is cut off
+ * exactly where the thumbnail matters. */
+body.cover #title,
+body.cover #progress { display: none; }
+
+body.cover #stage {
+  top: 400px;
+  height: 400px;
+  left: 70px;
+  width: 940px;
+}
+body.cover #caption {
+  line-height: 1.02;
+  -webkit-text-stroke: 14px #000;
+  text-shadow:
+    0 9px 0 rgba(0, 0, 0, .6),
+    0 16px 40px rgba(0, 0, 0, .55);
+}
+body.cover #panel {
+  top: 850px;
+  height: 650px;
+}
+body.cover #label { font-size: 46px; color: var(--highlight); }
+
 /* One span per word; the renderer reveals them as they are spoken.
  * inline-block so the current word can scale without reflowing the line, and
  * `visibility` (not `display`) for unrevealed words so the layout is fixed

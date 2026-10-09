@@ -57,6 +57,9 @@ class Script(BaseModel):
     # "keep showing the previous beat's image".
     visuals: Optional[list[Optional[BeatVisual]]] = None
     source_url: Optional[str] = None   # terraria only: the wiki article used
+    # terraria only: a few words shown huge on the opening title card, which is
+    # also the frame used as the reel's cover. May carry one *emphasis* word.
+    cover_line: Optional[str] = None
 
 
 class RenderedBeat(BaseModel):

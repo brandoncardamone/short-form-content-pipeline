@@ -219,7 +219,11 @@ def _background_start_offset(background: Path, total_s: float, safety_margin_s: 
 
 
 BRIGHT_CANDIDATES = 12
-BRIGHT_POWER = 1.5       # luma 50 vs luma 5 is ~25x as likely, not infinitely
+# Raised from 1.5 after a build picked a luma-24 stretch with 43, 52 and 70 on
+# offer: dim footage was still winning too often. At 2.5, luma 70 is ~14x as
+# likely as luma 24 and ~900x as likely as luma 5 - dark stretches remain
+# possible, but only when the draw offers little else.
+BRIGHT_POWER = 2.5
 
 
 def _window_luma(background: Path, start: float, total_s: float, probes: int = 4) -> float:
