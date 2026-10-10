@@ -33,6 +33,19 @@ on:
     # the day's four runs were wasted. Entries late in the window cannot
     # survive that; entries early in it can. The latest here is 18:50 Eastern,
     # so even a four-hour delay still lands inside the window.
+    #
+    # The two earliest entries (added 2026-10-10) are deliberately BEFORE the
+    # posting window. The delay turned out to be steady rather than random:
+    # on 2026-10-08 and 10-09 every trigger ran 5h10m-5h45m late (14:10 UTC
+    # ran at 19:30, 16:20 at 21:01, 18:30 at 22:46, 20:40 at 00:18), so the
+    # day's post was going out mid-afternoon at the earliest. Asked for five
+    # hours early, these two land around 10am and noon Eastern. If GitHub ever
+    # delivers them on time they arrive before 9am, the gate says "outside the
+    # posting window" and the run ends in ~15 seconds - the later entries then
+    # cover the day exactly as before. Nothing here can cause an early post;
+    # only cloud-tick's window check decides that.
+    - cron: "50 8 * * *"    # 04:50 EDT on time; ~10:10 EDT at the usual delay
+    - cron: "0 11 * * *"    # 07:00 EDT on time; ~12:20 EDT at the usual delay
     - cron: "10 14 * * *"   # 10:10 EDT / 09:10 EST
     - cron: "20 16 * * *"   # 12:20 EDT / 11:20 EST
     - cron: "30 18 * * *"   # 14:30 EDT / 13:30 EST
