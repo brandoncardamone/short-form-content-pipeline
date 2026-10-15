@@ -145,6 +145,31 @@ class TikTokConfig(BaseModel):
     post_mode: str = "direct"
 
 
+class YouTubeConfig(BaseModel):
+    privacy: str = "public"          # public | unlisted | private - set private to test
+    category_id: str = "20"          # Gaming
+    # YouTube's "altered or synthetic content" disclosure. The narration is a
+    # cloned voice, so this is on for the accounts that post to YouTube.
+    synthetic_media: bool = True
+
+
+PLATFORMS = ("instagram", "tiktok", "youtube")
+
+
+def platforms_for(value: str) -> list[str]:
+    """schedule.platform / --platform as a list. "both" keeps its original
+    meaning (Instagram + TikTok); otherwise a comma list such as
+    "instagram,youtube". Unknown names are an error rather than a silent skip."""
+    if value.strip() == "both":
+        return ["instagram", "tiktok"]
+    names = [v.strip() for v in value.split(",") if v.strip()]
+    unknown = [n for n in names if n not in PLATFORMS]
+    if unknown or not names:
+        raise ValueError(f"unknown platform(s) {unknown or value!r}; expected 'both' "
+                         f"or a comma list of {', '.join(PLATFORMS)}")
+    return list(dict.fromkeys(names))
+
+
 class ScheduleConfig(BaseModel):
     posts_per_day: int = 3
     # IANA name, not "local time" — this now runs on machines in different
@@ -157,7 +182,9 @@ class ScheduleConfig(BaseModel):
     timezone: str = "America/New_York"
     window_start_hour: int = 9    # in `timezone`; slots are randomized within [start, end)
     window_end_hour: int = 23
-    platform: str = "both"        # both | instagram | tiktok — passed to the publish step
+    # both | instagram | tiktok | youtube, or a comma list such as
+    # "instagram,youtube" - see platforms_for. Passed to the publish step.
+    platform: str = "both"
     min_gap_minutes: int = 30     # don't let two random slots land closer together than this
     # cloud-tick waits a random 0..jitter_max_minutes before publishing, so
     # posts do not land at the same clock times every day even though the cron
@@ -198,6 +225,7 @@ class Config(BaseModel):
     content: ContentConfig = ContentConfig()
     reddit: RedditConfig = RedditConfig()
     tiktok: TikTokConfig = TikTokConfig()
+    youtube: YouTubeConfig = YouTubeConfig()
     schedule: ScheduleConfig = ScheduleConfig()
     explainer: ExplainerConfig = ExplainerConfig()
 
@@ -215,6 +243,9 @@ class Config(BaseModel):
     instagram_user_id: Optional[str] = None
     instagram_app_id: Optional[str] = None
     instagram_app_secret: Optional[str] = None
+    youtube_refresh_token: Optional[str] = None
+    youtube_client_id: Optional[str] = None
+    youtube_client_secret: Optional[str] = None
 
 
 _config: Optional[Config] = None
@@ -300,6 +331,11 @@ def load_config(config_path: Optional[Path] = None) -> Config:
     data["instagram_user_id"] = _secret("INSTAGRAM_USER_ID", profile, shared=False)
     data["instagram_app_id"] = _secret("INSTAGRAM_APP_ID", profile)
     data["instagram_app_secret"] = _secret("INSTAGRAM_APP_SECRET", profile)
+    # The refresh token identifies the CHANNEL; the client id/secret belong to
+    # the Google Cloud project, which can serve several channels.
+    data["youtube_refresh_token"] = _secret("YOUTUBE_REFRESH_TOKEN", profile, shared=False)
+    data["youtube_client_id"] = _secret("YOUTUBE_CLIENT_ID", profile)
+    data["youtube_client_secret"] = _secret("YOUTUBE_CLIENT_SECRET", profile)
     data["reddit_client_id"] = _secret("REDDIT_CLIENT_ID", profile)
     data["reddit_client_secret"] = _secret("REDDIT_CLIENT_SECRET", profile)
     data["reddit_user_agent"] = _secret("REDDIT_USER_AGENT", profile)

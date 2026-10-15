@@ -91,6 +91,13 @@ jobs:
       INSTAGRAM_USER_ID_TERRARIA: ${{ secrets.INSTAGRAM_USER_ID_TERRARIA }}
       TIKTOK_ACCESS_TOKEN: ${{ secrets.TIKTOK_ACCESS_TOKEN }}
       TIKTOK_REFRESH_TOKEN: ${{ secrets.TIKTOK_REFRESH_TOKEN }}
+      # YouTube: the refresh token identifies the channel (per profile); the
+      # client id/secret belong to the Google Cloud project and are shared.
+      # All three are needed for the gate to count YouTube as a destination.
+      YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+      YOUTUBE_REFRESH_TOKEN_TERRARIA: ${{ secrets.YOUTUBE_REFRESH_TOKEN_TERRARIA }}
+      YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+      YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
     runs-on: ubuntu-latest
     # cloud-tick now catches up on every overdue slot in one run (not just
     # the first), since GitHub's actual scheduled cadence can run hours

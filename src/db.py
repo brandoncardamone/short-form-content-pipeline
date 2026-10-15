@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS videos (
   cover_ms      INTEGER,        -- ms offset for the platform-facing cover/thumbnail frame
   tiktok_id     TEXT,
   instagram_id  TEXT,
+  youtube_id    TEXT,
   error         TEXT,
   created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP
@@ -92,6 +93,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE videos ADD COLUMN content_format TEXT NOT NULL DEFAULT 'textchain'")
     if "cover_ms" not in cols:
         conn.execute("ALTER TABLE videos ADD COLUMN cover_ms INTEGER")
+    if "youtube_id" not in cols:
+        conn.execute("ALTER TABLE videos ADD COLUMN youtube_id TEXT")
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:

@@ -35,6 +35,47 @@ def _dedupe(tags: list[str]) -> list[str]:
     return [t for t in tags if t and not (t in seen or seen.add(t))]
 
 
+YOUTUBE_TITLE_MAX = 100
+YOUTUBE_TAGS_MAX_CHARS = 450   # YouTube's limit is 500; leave room for its own counting
+
+
+def _youtube_safe(text: str) -> str:
+    # YouTube rejects < and > in titles and descriptions outright.
+    return re.sub(r"\s+", " ", strip_emoji(text).replace("<", "").replace(">", "")).strip()
+
+
+def build_youtube_metadata(content_format: str, script) -> tuple[str, str, list[str]]:
+    """(title, description, tags) for a YouTube Short.
+
+    The title is the most visible text on a Short, so it uses the title card's
+    line (or the script title) rather than the Instagram-style hook. The
+    description carries the hook, the hashtags and - for terraria - the wiki
+    credit the CC BY-NC-SA licence requires, exactly as the Instagram caption does.
+    """
+    base = (script.cover_line or script.title or script.hook).replace("*", "")
+    # The game name in the title is what YouTube search matches on; the
+    # cover lines rarely say it ("Pylons break your travel").
+    suffix = " #terraria #shorts" if content_format == "terraria" else " #shorts"
+    title = _youtube_safe(base)
+    room = YOUTUBE_TITLE_MAX - len(suffix)
+    if len(title) > room:
+        title = title[:room].rsplit(" ", 1)[0].rstrip(" ,.;:-")
+    title += suffix
+
+    caption = build_caption(content_format, script.hook, script.tags)
+    if content_format == "terraria" and script.source_url:
+        caption += f"\n{script.source_url}"
+    description = "\n".join(_youtube_safe(line) for line in caption.split("\n"))[:4900]
+
+    tags, used = [], 0
+    for t in re.findall(r"#(\w+)", caption) + ["shorts"]:
+        if t in tags or used + len(t) + 1 > YOUTUBE_TAGS_MAX_CHARS:
+            continue
+        tags.append(t)
+        used += len(t) + 1
+    return title, description, tags
+
+
 def build_caption(content_format: str, hook: str, tags: list[str]) -> str:
     """
     hook: the video's hook/title line — used as-is (partial/teaser caption,

@@ -820,6 +820,35 @@ after each one.
 - Wide images (demo GIFs, infographics) sit small in the panel.
 - Build time on the GitHub runner is unmeasured; ~15 min locally for 60s.
 
+### YouTube Shorts (added 2026-10-15)
+
+The terraria profile publishes every video to YouTube Shorts as well as
+Instagram: `schedule.platform: instagram,youtube` in `config.terraria.yaml`
+(`config.platforms_for` parses it; `both` still means Instagram + TikTok).
+`src/publish/youtube.py` does a resumable `videos.insert`; there is no Shorts
+endpoint, a vertical video of 3 minutes or less simply is one.
+
+- Order is Instagram, then YouTube, in one `_publish_row` loop. The slot counts
+  as posted if either succeeds; a failure on the other is written to
+  `videos.error` as `partial: ...`. The runner is ephemeral, so a video that
+  failed on YouTube is not retried there later.
+- Title is the title card line (`cover_line`) + ` #shorts`; description is the
+  Instagram caption plus the wiki URL, so the CC BY-NC-SA credit is kept.
+- Auth: a Google Cloud project with YouTube Data API v3 enabled and a Desktop
+  app OAuth client. `scripts/youtube_auth.py --profile terraria --client-file
+  <json> --gh` gets the channel's refresh token and writes `.env` and the
+  GitHub secrets. Access tokens (1h) are minted per publish and never stored,
+  so nothing new reaches the committed state DB.
+- **The consent screen must be "In production", not "Testing"**: in Testing,
+  Google kills the refresh token after 7 days. An unverified production app is
+  fine for one's own channel (one warning screen at consent).
+- Docs as of 2026-10-15: upload quota is 100 calls/day in its own bucket, and
+  uploads from unverified API projects are no longer forced to private.
+- `monitor` prints per-video YouTube views - the only platform whose API gives
+  this app view counts.
+- `containsSyntheticMedia` is set (`youtube.synthetic_media`) because the
+  narration is a cloned voice.
+
 ### Monitoring
 
 `cli.py monitor` checks token validity (catches a revoked/broken token

@@ -79,7 +79,14 @@ schedule:
   window_end_hour: 23
   min_gap_minutes: 180
   jitter_max_minutes: 45
-  platform: instagram
+  # Instagram first, then YouTube Shorts (see _publish_row). YouTube is
+  # skipped cleanly until YOUTUBE_REFRESH_TOKEN_TERRARIA exists.
+  platform: instagram,youtube
+
+youtube:
+  privacy: public          # private to test without anyone seeing it
+  category_id: "20"        # Gaming
+  synthetic_media: true    # "altered or synthetic content" label: cloned narration voice
 
 tiktok:
   post_mode: inbox

@@ -397,25 +397,46 @@ def _cover_ms_for(content_format: str, rendered_beats, has_title_card: bool = Fa
 
 def _publish_row(conn, cfg, row, platform: str) -> bool:
     """Publish one video row to the given platform(s). Returns whether at
-    least one platform succeeded. Shared by cmd_publish and cmd_auto_publish."""
+    least one platform succeeded. Shared by cmd_publish and cmd_auto_publish.
+
+    platform is a schedule.platform value: "both", one name, or a comma list
+    (see config.platforms_for)."""
+    from src.config import platforms_for
     from src.db import update_video
     from src.schema import Script
-    from src.captions import build_caption
-    from src.publish.instagram import publish_reel, CredentialsMissing as IGMissing
-    from src.publish.tiktok import upload_draft, CredentialsMissing as TTMissing
+    from src.captions import build_caption, build_youtube_metadata
+    from src.publish import instagram, tiktok, youtube
 
     vid_id = row["id"]
+    targets = platforms_for(platform)
 
-    already_done = all(
-        row[f"{p}_id"] for p in ("instagram", "tiktok") if platform in ("both", p)
-    )
-    if already_done:
+    if all(row[f"{p}_id"] for p in targets):
         logger.info("Video %d already published to all requested platform(s) for this call.", vid_id)
         return True
 
     script = Script.model_validate_json(row["script_json"])
     mp4_path = Path(row["mp4_path"])
     cover_ms = row["cover_ms"] if row["cover_ms"] is not None else 500
+    # Rebuilt fresh here rather than trusting script.caption — a video
+    # generated before a caption-convention change would otherwise carry a
+    # stale caption forever, since nothing else re-derives it later.
+    caption = build_caption(row["content_format"], script.hook, script.tags)
+
+    def to_youtube():
+        title, description, tags = build_youtube_metadata(row["content_format"], script)
+        logger.info("YouTube title: %s", title)
+        return youtube.publish_short(mp4_path, title, description, tags, cfg)
+
+    # In this order: Instagram is the established account, so it goes first and
+    # a slow or failing upload elsewhere can never delay or block it.
+    publishers = {
+        "instagram": (lambda: instagram.publish_reel(mp4_path, caption, cfg, conn=conn, cover_ms=cover_ms),
+                      instagram.CredentialsMissing),
+        "tiktok": (lambda: tiktok.upload_draft(mp4_path, caption, cfg, conn=conn, cover_ms=cover_ms),
+                   tiktok.CredentialsMissing),
+        "youtube": (to_youtube, youtube.CredentialsMissing),
+    }
+
     published_any = False
     # The actual exception text, kept so it can be persisted below. Without
     # this the only record of WHY a publish failed was the Actions run log,
@@ -423,55 +444,39 @@ def _publish_row(conn, cfg, row, platform: str) -> bool:
     # third of publishes failing went undiagnosed for a week in September.
     failures: list[str] = []
 
-    # Rebuilt fresh here rather than trusting script.caption — a video
-    # generated before a caption-convention change would otherwise carry a
-    # stale caption forever, since nothing else re-derives it later.
-    caption = build_caption(row["content_format"], script.hook, script.tags)
-
-    if platform in ("both", "instagram") and row["instagram_id"]:
-        logger.info("Video %d already has an Instagram post (%s) — not re-posting.",
-                    vid_id, row["instagram_id"])
-    elif platform in ("both", "instagram"):
+    for name in (p for p in publishers if p in targets):
+        if row[f"{name}_id"]:
+            logger.info("Video %d already on %s (%s) — not re-posting.", vid_id, name, row[f"{name}_id"])
+            continue
+        publish, missing = publishers[name]
         try:
-            ig_id = publish_reel(mp4_path, caption, cfg, conn=conn, cover_ms=cover_ms)
-            update_video(conn, vid_id, instagram_id=ig_id)
-            logger.info("Published to Instagram: %s", ig_id)
-            published_any = True
-        except IGMissing as e:
-            logger.warning("Instagram skipped: %s", e)
+            post_id = publish()
+        except missing as e:
+            logger.warning("%s skipped: %s", name, e)
+            continue
         except Exception as e:
             # Any real failure (network, malformed upload, API-side rejection)
             # must not crash the whole publish call — that would leave the row
-            # stuck mid-status and skip finalizing the other platform / the
-            # schedule slot below. Log loudly and move on; the row stays
-            # eligible for a retry since instagram_id is never set on failure.
-            logger.error("Instagram publish failed for video %d: %s", vid_id, e)
-            failures.append(f"instagram: {e}")
-
-    if platform in ("both", "tiktok") and row["tiktok_id"]:
-        logger.info("Video %d already has a TikTok upload (%s) — not re-uploading.",
-                    vid_id, row["tiktok_id"])
-    elif platform in ("both", "tiktok"):
-        try:
-            tt_id = upload_draft(mp4_path, caption, cfg, conn=conn, cover_ms=cover_ms)
-            update_video(conn, vid_id, tiktok_id=tt_id)
-            logger.info("TikTok draft submitted: %s", tt_id)
-            published_any = True
-        except TTMissing as e:
-            logger.warning("TikTok skipped: %s", e)
-        except Exception as e:
-            logger.error("TikTok publish failed for video %d: %s", vid_id, e)
-            failures.append(f"tiktok: {e}")
+            # stuck mid-status and skip the other platforms / the schedule slot.
+            # The row stays eligible for a retry since <platform>_id is never
+            # set on failure.
+            logger.error("%s publish failed for video %d: %s", name, vid_id, e)
+            failures.append(f"{name}: {e}")
+            continue
+        update_video(conn, vid_id, **{f"{name}_id": post_id})
+        logger.info("Published to %s: %s", name, post_id)
+        published_any = True
 
     if published_any:
-        # Safe to mark 'uploaded' even for a single-platform call: the
-        # already_done/per-platform *_id checks above (not this status field)
-        # are what gate re-publishing, so a later publish to an untouched
-        # platform is never blocked by this. Previously this only fired when
-        # platform=="both", which left every row stuck at 'uploading' forever
-        # once schedule.platform was set to a single platform (e.g.
-        # "instagram" while TikTok's review is pending) — fixed 2026-09-04.
-        update_video(conn, vid_id, status="uploaded")
+        # Safe to mark 'uploaded' even when only some platforms worked: the
+        # per-platform *_id checks above (not this status field) are what gate
+        # re-publishing. A partial failure is still written to `error`, so a
+        # platform that quietly fails every day shows up in the queue rather
+        # than only in expiring run logs.
+        fields = {"status": "uploaded"}
+        if failures:
+            fields["error"] = ("partial: " + "; ".join(failures))[:600]
+        update_video(conn, vid_id, **fields)
     else:
         logger.warning("%s publish did not succeed for video %d — stays as 'assembled'", platform, vid_id)
         reason = "; ".join(failures) if failures else "no platform was attempted"
@@ -491,9 +496,12 @@ def cmd_publish(args):
             logger.error("Video %d not found.", args.video_id)
             sys.exit(1)
         if row["status"] == "uploaded":
-            logger.info("Video %d is already uploaded (tiktok_id=%s, instagram_id=%s) — skipping.",
-                        row["id"], row["tiktok_id"], row["instagram_id"])
-            return
+            logger.info("Video %d is already uploaded (instagram_id=%s, youtube_id=%s, "
+                        "tiktok_id=%s) — skipping. Pass --platform to add a platform it is "
+                        "not on yet.", row["id"], row["instagram_id"], row["youtube_id"],
+                        row["tiktok_id"])
+            if getattr(args, "platform", None) is None:
+                return
     else:
         row = claim_next(conn, "assembled", "uploading")
 
@@ -501,7 +509,7 @@ def cmd_publish(args):
         logger.info("No videos in 'assembled' state.")
         return
 
-    platform = getattr(args, "platform", "both")
+    platform = getattr(args, "platform", None) or cfg.schedule.platform
     _publish_row(conn, cfg, row, platform)
 
 
@@ -719,10 +727,15 @@ def _publish_credentials_missing(cfg):
     this check it would still spend an hour building a video, find that out at
     the publish step, and mark the video failed - every scheduled run.
     """
+    from src.config import platforms_for
     platform = cfg.schedule.platform
-    ok_ig = bool(cfg.instagram_access_token and cfg.instagram_user_id)
-    ok_tt = bool(cfg.tiktok_access_token or cfg.tiktok_refresh_token)
-    if (platform in ("both", "instagram") and ok_ig) or (platform in ("both", "tiktok") and ok_tt):
+    ok = {
+        "instagram": bool(cfg.instagram_access_token and cfg.instagram_user_id),
+        "tiktok": bool(cfg.tiktok_access_token or cfg.tiktok_refresh_token),
+        "youtube": bool(cfg.youtube_refresh_token and cfg.youtube_client_id
+                        and cfg.youtube_client_secret),
+    }
+    if any(ok[p] for p in platforms_for(platform)):
         return None
     from src.config import profile_name
     return (f"profile {profile_name()!r} has no credentials for "
@@ -942,12 +955,15 @@ def cmd_status(args):
     print("Platform tokens:")
     from src.publish.tiktok import token_status as tt_status
     from src.publish.instagram import token_status as ig_status
-    for name, fn in (("tiktok", tt_status), ("instagram", ig_status)):
+    from src.publish.youtube import token_status as yt_status
+    for name, fn in (("tiktok", tt_status), ("instagram", ig_status), ("youtube", yt_status)):
         info = fn(cfg, conn)
         if not info["configured"]:
             print(f"  {name:<10} not configured")
         elif info["expires_at"] is None:
-            if name == "instagram":
+            if name == "youtube":
+                print(f"  {name:<10} configured — refresh token, access token minted per publish")
+            elif name == "instagram":
                 print(f"  {name:<10} configured — non-expiring Page token, no auto-refresh (re-auth manually if ever rejected)")
             else:
                 print(f"  {name:<10} configured (env), no refresh recorded yet — will refresh on first publish")
@@ -982,11 +998,12 @@ def cmd_monitor(args):
     from src.publish.instagram import check_account_health as ig_health
     from src.publish.instagram import fetch_post_metrics
     from src.publish.tiktok import check_account_health as tt_health
+    from src.publish.youtube import check_account_health as yt_health
 
     cfg = _cfg()
     conn = _db(cfg)
 
-    for name, fn in (("instagram", ig_health), ("tiktok", tt_health)):
+    for name, fn in (("instagram", ig_health), ("tiktok", tt_health), ("youtube", yt_health)):
         result = fn(cfg, conn)
         if result.get("error") == "not configured":
             print(f"{name}: not configured, skipping")
@@ -1015,8 +1032,18 @@ def cmd_monitor(args):
                 line += f" ({'+' if delta > 0 else ''}{delta} since last check)"
         print(line)
 
-
-# ── main ──────────────────────────────────────────────────────────────────────
+    # YouTube views per video - the one platform whose API reports views to
+    # this app. Printed, not stored: the live number is what is useful here.
+    yt_ids = [r["youtube_id"] for r in conn.execute(
+        "SELECT youtube_id FROM videos WHERE youtube_id IS NOT NULL ORDER BY id DESC LIMIT 20")]
+    if yt_ids:
+        from src.publish.youtube import fetch_video_stats
+        try:
+            for s in fetch_video_stats(cfg, yt_ids):
+                print(f"  youtube {s['youtube_id']} {s['privacy']:<8} views={s['views']:>6} "
+                      f"likes={s['likes']:>4} comments={s['comments']:>3}  {s['title']}")
+        except Exception as e:
+            print(f"youtube views: unavailable ({e})")
 
     # Per-post engagement. Wrapped because a metrics failure must never make
     # `monitor` look like a token problem — the token check above is the part
@@ -1044,6 +1071,8 @@ def cmd_monitor(args):
                   f"likes={r['likes'] or 0:4d} comments={r['comments'] or 0:3d} "
                   f"avg={r['avg_likes'] or 0:.2f}")
 
+# ── main ──────────────────────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser(description="Short-form content pipeline")
     # Global, so it works on every subcommand. Must be applied before any
@@ -1069,8 +1098,9 @@ def main():
 
     p_publish = sub.add_parser("publish", help="Upload to platforms")
     p_publish.add_argument("--video-id", type=int, default=None)
-    p_publish.add_argument("--platform", choices=["both", "instagram", "tiktok"], default="both",
-                            help="Restrict to one platform (e.g. for manual testing) instead of publishing to both")
+    p_publish.add_argument("--platform", default=None,
+                            help="instagram, youtube, tiktok, both, or a comma list "
+                                 "(default: the profile's schedule.platform)")
 
     sub.add_parser("run-all", help="Advance or generate one video end to end")
     sub.add_parser("auto-publish", help="Publish at randomized daily times (cfg.schedule) — separate from run-all")
