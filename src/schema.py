@@ -60,6 +60,11 @@ class Script(BaseModel):
     # terraria only: a few words shown huge on the opening title card, which is
     # also the frame used as the reel's cover. May carry one *emphasis* word.
     cover_line: Optional[str] = None
+    # terraria only: the ANGLES / HOOKS entries this script was written to.
+    # Recorded so YouTube results can be traced back to them (see
+    # sources/terraria._learned_weights). None on scripts before 2026-10-16.
+    angle: Optional[str] = None
+    hook_style: Optional[str] = None
 
 
 class RenderedBeat(BaseModel):

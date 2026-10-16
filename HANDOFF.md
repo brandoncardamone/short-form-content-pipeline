@@ -849,6 +849,42 @@ endpoint, a vertical video of 3 minutes or less simply is one.
 - `containsSyntheticMedia` is set (`youtube.synthetic_media`) because the
   narration is a cloned voice.
 
+### YouTube growth: second stream, learning, playlists, compilations (2026-10-16)
+
+Goal set by the owner: grow the YouTube channel toward the Partner Program
+(1,000 subscribers + 10M Shorts views in 90 days, or 4,000 long-form watch
+hours in a year). Instagram stays at one post a day, unchanged.
+
+- **`terraria_yt` profile** (`config.terraria_yt.yaml`, `data/state_terraria_yt.db`):
+  two extra YouTube-only Shorts a day, 30-45s instead of 60-120s, with
+  `terraria.prompt_notes` asking for a sub-9-word first beat, no context-only
+  beats, an answerable closing question and a looping ending. No credentials of
+  its own: `youtube.channel_profile: terraria` borrows the channel login, and
+  it has no Instagram token, so it cannot post there. Window starts at 13:00
+  and `schedule.gap_includes_related` keeps it 120+ min after the shared post.
+- **Cross-stream dedup**: `terraria.related_dbs` (both directions) - a page
+  used by either stream is skipped by both (`sources/terraria._used`).
+- **Learning** (`terraria.learn_from_analytics`, terraria_yt only): each new
+  script records its `angle` and `hook_style`; `_learned_weights` scales the
+  ANGLES/HOOKS weights by the log-views of their videos 3+ days old (shrunk by
+  3 pseudo-videos, clamped x0.5-x2). Uses YouTube Analytics, so needs the
+  `yt-analytics.readonly` scope; fails open to the hand-set weights.
+- **Trending** (`terraria.trending_share: 0.15`, terraria_yt only): articles
+  with 4+ human edits on the wiki in the last week come first sometimes.
+- **Playlists** (`youtube.playlists`): each Short goes into a playlist chosen
+  by its angle (`terraria.PLAYLISTS`). Needs `youtube.force-ssl`.
+- **Weekly compilation** (`compilation.enabled`, terraria_yt, Sundays): the
+  workflow attaches each built MP4 to the `terraria-originals` release as
+  `<profile>-video_<id>.mp4`; `cli compile-weekly` stitches the week's videos
+  into a 1920x1080 video with a blurred fill and chapters, uploads it and
+  records it in the `compilations` table (one row per ISO week, including
+  skipped weeks). Videos built before 2026-10-16 have no original and are left out.
+- `monitor` shows per-video % watched next to views once the analytics scope
+  is granted.
+- **Re-consent needed for the two new scopes**: enable "YouTube Analytics API"
+  in the Cloud project, then run `scripts/youtube_auth.py --profile terraria
+  --gh` again (it reuses the client from .env).
+
 ### Monitoring
 
 `cli.py monitor` checks token validity (catches a revoked/broken token

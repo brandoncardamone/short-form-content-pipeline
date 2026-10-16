@@ -25,6 +25,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def decide() -> tuple[bool, str]:
+    proceed, reason = decide_post()
+    if proceed:
+        return proceed, reason
+    from src import compile_weekly
+    from src.cli import _cfg, _db, _now_in_schedule_tz
+    cfg = _cfg()
+    if compile_weekly.is_due(cfg, _db(cfg), _now_in_schedule_tz(cfg)):
+        return True, f"{reason}, but the weekly compilation is due"
+    return proceed, reason
+
+
+def decide_post() -> tuple[bool, str]:
     # Imported lazily so an import failure is caught and fails open.
     sys.argv = ["should_run"]
     from src.cli import (
@@ -53,7 +65,7 @@ def decide() -> tuple[bool, str]:
     if done >= sc.posts_per_day:
         return False, f"already posted {done}/{sc.posts_per_day} today"
 
-    gap = _minutes_since_last_publish(conn)
+    gap = _minutes_since_last_publish(conn, cfg)
     if gap is not None and gap < sc.min_gap_minutes:
         return False, (f"last post was {gap:.0f} min ago, "
                        f"min_gap_minutes is {sc.min_gap_minutes}")

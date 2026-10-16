@@ -13,6 +13,7 @@ output/
 data/*
 !data/state.db
 !data/state_terraria.db
+!data/state_terraria_yt.db
 assets/backgrounds/
 assets/voices/
 src/out/

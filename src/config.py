@@ -151,6 +151,41 @@ class YouTubeConfig(BaseModel):
     # YouTube's "altered or synthetic content" disclosure. The narration is a
     # cloned voice, so this is on for the accounts that post to YouTube.
     synthetic_media: bool = True
+    # Use another profile's channel login. The YouTube-only stream
+    # (terraria_yt) posts to the same channel as terraria, so it borrows
+    # YOUTUBE_REFRESH_TOKEN_TERRARIA rather than needing a copy of it.
+    channel_profile: Optional[str] = None
+    # Add each Short to a playlist named after its angle (see
+    # sources/terraria.PLAYLISTS). Needs the youtube.force-ssl scope.
+    playlists: bool = False
+
+
+class TerrariaConfig(BaseModel):
+    # Extra instructions appended to the script prompt - how the YouTube-only
+    # stream asks for a faster, Shorts-shaped script without forking the prompt.
+    prompt_notes: str = ""
+    # Other profiles' databases for the same subject matter. Read-only: a page
+    # already used by either stream is skipped, and their YouTube results feed
+    # the angle weighting below.
+    related_dbs: list[Path] = []
+    # Share of videos drawn from articles the wiki is actively editing - new
+    # game content gets searched for most right after it lands.
+    trending_share: float = 0.0
+    # Re-weight angles and hook styles by how their videos did on YouTube.
+    learn_from_analytics: bool = False
+
+
+class CompilationConfig(BaseModel):
+    """Weekly long-form video stitched from the week's Shorts. Long-form views
+    earn far more than Shorts views and count toward the watch-hours route
+    into the Partner Program, which Shorts views do not."""
+    enabled: bool = False
+    weekday: int = 6               # Monday=0 .. Sunday=6, in schedule.timezone
+    min_videos: int = 6
+    max_videos: int = 20
+    # Release that keeps each built Short's original file, since the runner is
+    # ephemeral. Written by the workflow, read back here.
+    release: str = "terraria-originals"
 
 
 PLATFORMS = ("instagram", "tiktok", "youtube")
@@ -191,6 +226,11 @@ class ScheduleConfig(BaseModel):
     # that triggers them is fixed. Most of this is absorbed by the build, which
     # takes ~25 min anyway - only the remainder is actually slept.
     jitter_max_minutes: int = 45
+    # Also count posts recorded in terraria.related_dbs toward min_gap_minutes.
+    # For a stream that shares a channel with another profile, so the two never
+    # post minutes apart. One-directional on purpose: set it only on the stream
+    # that should yield.
+    gap_includes_related: bool = False
 
 
 class RedditConfig(BaseModel):
@@ -226,6 +266,8 @@ class Config(BaseModel):
     reddit: RedditConfig = RedditConfig()
     tiktok: TikTokConfig = TikTokConfig()
     youtube: YouTubeConfig = YouTubeConfig()
+    terraria: TerrariaConfig = TerrariaConfig()
+    compilation: CompilationConfig = CompilationConfig()
     schedule: ScheduleConfig = ScheduleConfig()
     explainer: ExplainerConfig = ExplainerConfig()
 
@@ -333,7 +375,8 @@ def load_config(config_path: Optional[Path] = None) -> Config:
     data["instagram_app_secret"] = _secret("INSTAGRAM_APP_SECRET", profile)
     # The refresh token identifies the CHANNEL; the client id/secret belong to
     # the Google Cloud project, which can serve several channels.
-    data["youtube_refresh_token"] = _secret("YOUTUBE_REFRESH_TOKEN", profile, shared=False)
+    channel = (data.get("youtube") or {}).get("channel_profile") or profile
+    data["youtube_refresh_token"] = _secret("YOUTUBE_REFRESH_TOKEN", channel, shared=False)
     data["youtube_client_id"] = _secret("YOUTUBE_CLIENT_ID", profile)
     data["youtube_client_secret"] = _secret("YOUTUBE_CLIENT_SECRET", profile)
     data["reddit_client_id"] = _secret("REDDIT_CLIENT_ID", profile)

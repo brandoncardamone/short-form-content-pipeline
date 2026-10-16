@@ -78,6 +78,9 @@ jobs:
             state: data/state.db
           - profile: terraria
             state: data/state_terraria.db
+          # Extra YouTube-only Shorts for the same channel (config.terraria_yt.yaml).
+          - profile: terraria_yt
+            state: data/state_terraria_yt.db
     env:
       PROFILE: ${{ matrix.profile }}
       # Account credentials for every profile. config._secret picks
@@ -171,7 +174,7 @@ jobs:
       # restoring the old set - the same trap as pipeline-assets-v1.
       - name: Cache downloaded pipeline assets (terraria)
         id: cache-assets-terraria
-        if: steps.gate.outputs.proceed != 'false' && matrix.profile == 'terraria'
+        if: steps.gate.outputs.proceed != 'false' && startsWith(matrix.profile, 'terraria')
         uses: actions/cache@v6
         with:
           path: |
@@ -181,7 +184,7 @@ jobs:
           key: pipeline-assets-terraria-v1
 
       - name: Download pipeline assets from release (terraria)
-        if: steps.gate.outputs.proceed != 'false' && matrix.profile == 'terraria' && steps.cache-assets-terraria.outputs.cache-hit != 'true'
+        if: steps.gate.outputs.proceed != 'false' && startsWith(matrix.profile, 'terraria') && steps.cache-assets-terraria.outputs.cache-hit != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -248,6 +251,42 @@ jobs:
           TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
           TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
         run: .venv/bin/python -m src.cli cloud-tick
+
+      # The runner is gone by the time the weekly compilation is built, so each
+      # built Short's full-quality file is kept on a release, named
+      # <profile>-video_<id>.mp4. continue-on-error: losing one original costs
+      # one segment of a compilation, never the day's post or its state commit.
+      - name: Keep the built video's original file (terraria)
+        if: always() && steps.gate.outputs.proceed != 'false' && startsWith(matrix.profile, 'terraria')
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          READY=$(.venv/bin/python -c "from src.config import load_config; print(load_config().output.ready_dir)")
+          shopt -s nullglob
+          files=("$READY"/video_*.mp4)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No video built this run."
+            exit 0
+          fi
+          # Both terraria jobs may get here first on day one; whichever loses
+          # the race to create the release just uploads into it.
+          gh release view terraria-originals >/dev/null 2>&1 || \
+            gh release create terraria-originals --title "Terraria originals" \
+              --notes "Full-quality file of each built Short, kept for the weekly compilation. Written by the workflow." || true
+          mkdir -p "$RUNNER_TEMP/originals"
+          for f in "${files[@]}"; do
+            cp "$f" "$RUNNER_TEMP/originals/${PROFILE}-$(basename "$f")"
+          done
+          gh release upload terraria-originals "$RUNNER_TEMP"/originals/*.mp4 --clobber
+
+      - name: Weekly long-form compilation (terraria_yt)
+        if: steps.gate.outputs.proceed != 'false' && matrix.profile == 'terraria_yt'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MOBILE_SYNC_DIR: ""
+        run: .venv/bin/python -m src.cli compile-weekly
 
       - name: Scrub secrets and commit updated state back to the repo
         # if: always() is load-bearing. These two steps used to default to

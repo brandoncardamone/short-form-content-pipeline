@@ -37,11 +37,19 @@ logger = logging.getLogger(__name__)
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API_BASE = "https://www.googleapis.com/youtube/v3"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
+ANALYTICS_URL = "https://youtubeanalytics.googleapis.com/v2/reports"
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     # Read-only: lets `monitor` see subscriber and per-video view counts.
     "https://www.googleapis.com/auth/youtube.readonly",
+    # Per-video retention (how much of each Short people watched), which is
+    # what sources/terraria._learned_weights steers by.
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
+    # Playlists. upload/readonly cannot create them or add videos to them.
+    "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
+ANALYTICS_METRICS = ("views,averageViewDuration,averageViewPercentage,likes,comments,"
+                     "shares,subscribersGained")
 UPLOAD_ATTEMPTS = 4
 SESSION_ATTEMPTS = 3
 
@@ -235,6 +243,77 @@ def check_account_health(cfg, conn=None) -> dict:
         "followers_count": int(stats.get("subscriberCount", 0)),
         "media_count": int(stats.get("videoCount", 0)),
     }
+
+
+def fetch_analytics(cfg, token: str = None) -> dict[str, dict]:
+    """Lifetime YouTube Analytics per video: {video_id: {views,
+    averageViewDuration, averageViewPercentage, likes, comments, shares,
+    subscribersGained}}. Lags real time by 2-3 days. Raises if the token was
+    granted before the yt-analytics.readonly scope was added (403) - re-run
+    scripts/youtube_auth.py."""
+    from datetime import date
+    token = token or access_token(cfg)
+    resp = requests.get(
+        ANALYTICS_URL,
+        params={"ids": "channel==MINE", "startDate": "2026-01-01",
+                "endDate": date.today().isoformat(), "metrics": ANALYTICS_METRICS,
+                "dimensions": "video", "sort": "-views", "maxResults": 200},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"YouTube Analytics refused: {_error_text(resp)}")
+    body = resp.json()
+    names = [h["name"] for h in body.get("columnHeaders", [])]
+    out = {}
+    for row in body.get("rows") or []:
+        rec = dict(zip(names, row))
+        out[rec.pop("video")] = rec
+    return out
+
+
+def add_to_playlist(cfg, video_id: str, title: str, token: str = None) -> str:
+    """Add a video to the channel's playlist called `title`, creating it the
+    first time. Found by title each call rather than cached, because two
+    profiles post to the same channel and neither owns the list."""
+    token = token or access_token(cfg)
+    auth = {"Authorization": f"Bearer {token}"}
+    playlist_id = None
+    page = None
+    while playlist_id is None:
+        resp = requests.get(f"{API_BASE}/playlists",
+                            params={"part": "snippet", "mine": "true", "maxResults": 50,
+                                    **({"pageToken": page} if page else {})},
+                            headers=auth, timeout=20)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Listing playlists failed: {_error_text(resp)}")
+        body = resp.json()
+        playlist_id = next((p["id"] for p in body.get("items", [])
+                            if p["snippet"]["title"] == title), None)
+        page = body.get("nextPageToken")
+        if not page:
+            break
+
+    if playlist_id is None:
+        resp = requests.post(f"{API_BASE}/playlists", params={"part": "snippet,status"},
+                             headers=auth, timeout=20,
+                             json={"snippet": {"title": title,
+                                               "description": f"{title}, one Short at a time."},
+                                   "status": {"privacyStatus": "public"}})
+        if resp.status_code != 200:
+            raise RuntimeError(f"Creating playlist {title!r} failed: {_error_text(resp)}")
+        playlist_id = resp.json()["id"]
+        logger.info("Created YouTube playlist %r (%s)", title, playlist_id)
+
+    resp = requests.post(f"{API_BASE}/playlistItems", params={"part": "snippet"},
+                         headers=auth, timeout=20,
+                         json={"snippet": {"playlistId": playlist_id,
+                                           "resourceId": {"kind": "youtube#video",
+                                                          "videoId": video_id}}})
+    if resp.status_code != 200:
+        raise RuntimeError(f"Adding {video_id} to {title!r} failed: {_error_text(resp)}")
+    logger.info("Added %s to playlist %r", video_id, title)
+    return playlist_id
 
 
 def fetch_video_stats(cfg, video_ids: list[str]) -> list[dict]:

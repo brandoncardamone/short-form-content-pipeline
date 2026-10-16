@@ -425,7 +425,17 @@ def _publish_row(conn, cfg, row, platform: str) -> bool:
     def to_youtube():
         title, description, tags = build_youtube_metadata(row["content_format"], script)
         logger.info("YouTube title: %s", title)
-        return youtube.publish_short(mp4_path, title, description, tags, cfg)
+        video_id = youtube.publish_short(mp4_path, title, description, tags, cfg)
+        if cfg.youtube.playlists and row["content_format"] == "terraria":
+            from src.sources.terraria import playlist_for
+            name = playlist_for(script.angle)
+            if name:
+                try:
+                    youtube.add_to_playlist(cfg, video_id, name)
+                except Exception as e:
+                    # The Short is already up; a missing playlist entry is cosmetic.
+                    logger.warning("Playlist step skipped for %s: %s", video_id, e)
+        return video_id
 
     # In this order: Instagram is the established account, so it goes first and
     # a slow or failing upload elsewhere can never delay or block it.
@@ -533,7 +543,7 @@ def _now_in_schedule_tz(cfg):
     return datetime.now(ZoneInfo(cfg.schedule.timezone)).replace(tzinfo=None)
 
 
-def _minutes_since_last_publish(conn):
+def _minutes_since_last_publish(conn, cfg=None):
     """Minutes since the most recent successful publish, or None if there has
     never been one.
 
@@ -544,16 +554,26 @@ def _minutes_since_last_publish(conn):
     """
     from datetime import datetime, timezone
 
-    row = conn.execute(
-        "SELECT max(updated_at) FROM videos WHERE status = ?", ("uploaded",)
-    ).fetchone()
-    if not row or not row[0]:
+    import sqlite3
+
+    sql = "SELECT max(updated_at) FROM videos WHERE status = 'uploaded'"
+    stamps = [conn.execute(sql).fetchone()[0]]
+    if cfg is not None and cfg.schedule.gap_includes_related:
+        for path in cfg.terraria.related_dbs:
+            if Path(path).exists():
+                other = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+                try:
+                    stamps.append(other.execute(sql).fetchone()[0])
+                finally:
+                    other.close()
+    stamps = [s for s in stamps if s]
+    if not stamps:
         return None
     try:
-        last = datetime.fromisoformat(row[0])
+        last = max(datetime.fromisoformat(s) for s in stamps)
     except ValueError:
         logger.warning(
-            "Could not parse last publish time %r — not enforcing min_gap this run", row[0]
+            "Could not parse last publish time %r — not enforcing min_gap this run", stamps
         )
         return None
     if last.tzinfo is not None:
@@ -670,7 +690,7 @@ def cmd_auto_publish(args):
         # single long run, because the check runs after the previous video has
         # been fully built and published, by which time the gap may genuinely
         # have elapsed.
-        gap_min = _minutes_since_last_publish(conn)
+        gap_min = _minutes_since_last_publish(conn, cfg)
         if gap_min is not None and gap_min < sc.min_gap_minutes:
             logger.info(
                 "Slot %s is due, but the last post went out %.0f min ago and "
@@ -803,7 +823,7 @@ def cmd_cloud_tick(args):
         logger.info("Already posted %d/%d today — nothing to do.", done, sc.posts_per_day)
         return
 
-    gap_min = _minutes_since_last_publish(conn)
+    gap_min = _minutes_since_last_publish(conn, cfg)
     if gap_min is not None and gap_min < sc.min_gap_minutes:
         logger.info(
             "Last post went out %.0f min ago and schedule.min_gap_minutes is %d — "
@@ -1037,11 +1057,19 @@ def cmd_monitor(args):
     yt_ids = [r["youtube_id"] for r in conn.execute(
         "SELECT youtube_id FROM videos WHERE youtube_id IS NOT NULL ORDER BY id DESC LIMIT 20")]
     if yt_ids:
-        from src.publish.youtube import fetch_video_stats
+        from src.publish.youtube import fetch_analytics, fetch_video_stats
+        try:
+            retention = fetch_analytics(cfg)
+        except Exception as e:
+            retention = {}
+            print(f"youtube retention: unavailable ({e})")
         try:
             for s in fetch_video_stats(cfg, yt_ids):
+                r = retention.get(s["youtube_id"], {})
+                watched = (f"watched={r['averageViewPercentage']:5.1f}%"
+                           if "averageViewPercentage" in r else "watched=  n/a ")
                 print(f"  youtube {s['youtube_id']} {s['privacy']:<8} views={s['views']:>6} "
-                      f"likes={s['likes']:>4} comments={s['comments']:>3}  {s['title']}")
+                      f"{watched} likes={s['likes']:>4} comments={s['comments']:>3}  {s['title']}")
         except Exception as e:
             print(f"youtube views: unavailable ({e})")
 
@@ -1070,6 +1098,17 @@ def cmd_monitor(args):
             print(f"    {r['content_format']:14s} posts={r['posts']:3d} "
                   f"likes={r['likes'] or 0:4d} comments={r['comments'] or 0:3d} "
                   f"avg={r['avg_likes'] or 0:.2f}")
+
+# ── weekly compilation ───────────────────────────────────────────────────────
+
+def cmd_compile_weekly(args):
+    """Build and upload the week's long-form compilation if it is due (see
+    src/compile_weekly.py). A no-op on any other day."""
+    from src import compile_weekly
+    cfg = _cfg()
+    conn = _db(cfg)
+    compile_weekly.run(cfg, conn, _now_in_schedule_tz(cfg))
+
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
@@ -1112,6 +1151,7 @@ def main():
     p_ingest.add_argument("--crf", type=int, default=18,
                           help="x264 quality for the normalized clip (lower = bigger file)")
 
+    sub.add_parser("compile-weekly", help="Upload the week's long-form compilation when due")
     sub.add_parser("status", help="Show video counts by status")
     sub.add_parser("monitor", help="Check token health + follower/post trend for both platforms")
 
@@ -1127,6 +1167,7 @@ def main():
         "auto-publish": cmd_auto_publish,
         "cloud-tick": cmd_cloud_tick,
         "ingest":    cmd_ingest,
+        "compile-weekly": cmd_compile_weekly,
         "status":    cmd_status,
         "monitor":   cmd_monitor,
     }

@@ -87,6 +87,12 @@ youtube:
   privacy: public          # private to test without anyone seeing it
   category_id: "20"        # Gaming
   synthetic_media: true    # "altered or synthetic content" label: cloned narration voice
+  playlists: true
+
+terraria:
+  # Skip pages the YouTube-only stream (config.terraria_yt.yaml) already used:
+  # this account's videos go to the same YouTube channel.
+  related_dbs: [data/state_terraria_yt.db]
 
 tiktok:
   post_mode: inbox

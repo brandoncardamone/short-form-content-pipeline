@@ -29,6 +29,7 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote
 
@@ -184,6 +185,148 @@ HOOKS = [
 
 def _weighted(options) -> str:
     return random.choices([o for o, _ in options], weights=[w for _, w in options])[0]
+
+
+# YouTube playlist for each angle, so a viewer who liked one Short has a run of
+# similar ones to keep watching. Matched on the angle's opening words.
+PLAYLISTS = [
+    ("myth versus reality", "Terraria Myths Busted"),
+    ("the story behind this", "Terraria History and Secrets"),
+    ("the hidden mechanic", "Terraria Hidden Mechanics"),
+    ("things almost nobody knows", "Terraria Hidden Mechanics"),
+]
+DEFAULT_PLAYLIST = "Terraria Tips"
+
+
+def playlist_for(angle: Optional[str]) -> Optional[str]:
+    if not angle:
+        return None
+    return next((name for prefix, name in PLAYLISTS if angle.startswith(prefix)), DEFAULT_PLAYLIST)
+
+
+# ── learning from YouTube results ──
+LEARN_MIN_AGE_DAYS = 3       # YouTube Analytics lags 2-3 days; younger numbers are partial
+LEARN_PRIOR = 3              # pseudo-videos of "average" each option starts with
+LEARN_CLAMP = (0.5, 2.0)     # never more than double or halve an option's base weight
+
+
+def _script_rows(conn, cfg):
+    """(script_json, youtube_id, updated_at) for every published video in this
+    profile's database and the related ones (read-only)."""
+    import sqlite3
+    sql = ("SELECT script_json, youtube_id, updated_at FROM videos "
+           "WHERE youtube_id IS NOT NULL AND status = 'uploaded'")
+    rows = list(conn.execute(sql)) if conn is not None else []
+    for path in cfg.terraria.related_dbs:
+        if Path(path).exists():
+            other = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            try:
+                rows += list(other.execute(sql))
+            except sqlite3.OperationalError:
+                pass        # an older database without youtube_id yet
+            finally:
+                other.close()
+    return rows
+
+
+def _learned_weights(cfg, conn) -> tuple[list, list]:
+    """ANGLES and HOOKS with their weights scaled by how their videos did.
+
+    Score is log views: the outcome that matters, and comparable between the
+    60-80s shared videos and the 30-45s YouTube-only ones, which retention
+    percentage is not. Each option's mean is shrunk toward the overall mean by
+    LEARN_PRIOR, so two lucky videos cannot take over the mix, and the factor
+    is clamped. Fails open to the hand-set weights."""
+    if not cfg.terraria.learn_from_analytics:
+        return ANGLES, HOOKS
+    import math
+    from datetime import datetime, timedelta, timezone
+    from src.publish import youtube
+    try:
+        stats = youtube.fetch_analytics(cfg)
+    except Exception as e:
+        logger.warning("YouTube analytics unavailable, using hand-set weights: %s", e)
+        return ANGLES, HOOKS
+
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=LEARN_MIN_AGE_DAYS)
+    samples = []                       # (angle, hook_style, score)
+    for script_json, yt_id, updated in _script_rows(conn, cfg):
+        s = stats.get(yt_id)
+        if not s or not updated or datetime.fromisoformat(str(updated)) > cutoff:
+            continue
+        data = json.loads(script_json)
+        samples.append((data.get("angle"), data.get("hook_style"), math.log1p(s["views"])))
+    if len(samples) < 4:
+        logger.info("Only %d mature YouTube results - using hand-set weights", len(samples))
+        return ANGLES, HOOKS
+
+    overall = sum(x for _, _, x in samples) / len(samples)
+
+    def scale(options, idx):
+        out = []
+        for text, w in options:
+            mine = [x[2] for x in samples if x[idx] == text]
+            n = len(mine)
+            mean = (sum(mine) + LEARN_PRIOR * overall) / (n + LEARN_PRIOR)
+            factor = min(max(math.exp(mean - overall), LEARN_CLAMP[0]), LEARN_CLAMP[1])
+            out.append((text, w * factor))
+            if n:
+                logger.info("Learned weight x%.2f from %d video(s): %s", factor, n, text[:60])
+        return out
+
+    return scale(ANGLES, 0), scale(HOOKS, 1)
+
+
+# ── trending: articles the wiki is busy editing ──
+TRENDING_DAYS = 7
+TRENDING_MIN_EDITS = 4
+TRENDING_TRIES = 6
+
+
+def _trending_titles() -> list[str]:
+    """Main-namespace articles with the most human edits in the last week, plus
+    new ones. A burst of edits is usually new game content or a rework, which
+    is exactly when people search for it."""
+    from collections import Counter
+    from datetime import datetime, timedelta, timezone
+    since = (datetime.now(timezone.utc) - timedelta(days=TRENDING_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    data = _get({"action": "query", "list": "recentchanges", "rcnamespace": 0,
+                 "rctype": "edit|new", "rcshow": "!bot|!redirect", "rcend": since,
+                 "rcprop": "title", "rclimit": 500})
+    if not data:
+        return []
+    counts = Counter(c["title"] for c in data.get("query", {}).get("recentchanges", []))
+    return [t for t, n in counts.most_common() if n >= TRENDING_MIN_EDITS and not _SKIP_TITLE.search(t)]
+
+
+def _pick_trending(db_conn, cfg) -> Optional[Page]:
+    for title in _trending_titles()[:TRENDING_TRIES]:
+        page = fetch_page(title)
+        if page is None or _used(db_conn, cfg, page.key):
+            continue
+        logger.info("Terraria page: %r (trending on the wiki; %d prose chars)", page.title, page.prose_chars)
+        return page
+    return None
+
+
+def _used(db_conn, cfg, key: str) -> bool:
+    """Whether this page has been made into a video by this profile or by any
+    of terraria.related_dbs (the other stream posting to the same channel)."""
+    import sqlite3
+    if db_conn is not None and premise_exists(db_conn, key):
+        return True
+    if cfg is None:
+        return False
+    for path in cfg.terraria.related_dbs:
+        if Path(path).exists():
+            other = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            other.row_factory = sqlite3.Row
+            try:
+                if premise_exists(other, key):
+                    return True
+            finally:
+                other.close()
+    return False
 
 PROMPT = """You write narration for a short vertical video about ONE thing from the game Terraria.
 The video shows the item's sprite or a clip of it in use, with big captions, over gameplay footage.
@@ -490,15 +633,13 @@ def fetch_page(title: str) -> Optional[Page]:
     return _extract(data["parse"])
 
 
-def _pick_featured(db_conn) -> Optional[Page]:
+def _pick_featured(db_conn, cfg=None) -> Optional[Page]:
     """An unused article from FEATURED, or None once they run out or fail."""
     titles = list(FEATURED)
     random.shuffle(titles)
     for title in titles[:FEATURED_TRIES]:
         page = fetch_page(title)
-        if page is None:
-            continue
-        if db_conn is not None and premise_exists(db_conn, page.key):
+        if page is None or _used(db_conn, cfg, page.key):
             continue
         logger.info("Terraria page: %r (featured; %d prose chars, %d images, %d animated)",
                     page.title, page.prose_chars, len(page.images),
@@ -507,23 +648,26 @@ def _pick_featured(db_conn) -> Optional[Page]:
     return None
 
 
-def pick_page(db_conn) -> Page:
-    """A well-known subject most of the time, otherwise the best unused
-    article out of a few random batches. No LLM involved either way."""
+def pick_page(db_conn, cfg=None) -> Page:
+    """Sometimes an article the wiki is busy editing (terraria.trending_share),
+    usually a well-known subject, otherwise the best unused article out of a
+    few random batches. No LLM involved either way."""
+    if cfg is not None and random.random() < cfg.terraria.trending_share:
+        page = _pick_trending(db_conn, cfg)
+        if page is not None:
+            return page
     if random.random() < FEATURED_SHARE:
-        page = _pick_featured(db_conn)
+        page = _pick_featured(db_conn, cfg)
         if page is not None:
             return page
 
     for batch in range(1, MAX_BATCHES + 1):
         candidates: list[Page] = []
         for r in _random_titles()[:MAX_PAGES_PARSED]:
-            if db_conn is not None and premise_exists(db_conn, f"terraria:{r['id']}"):
+            if _used(db_conn, cfg, f"terraria:{r['id']}"):
                 continue
             page = fetch_page(r["title"])
-            if page is None:
-                continue
-            if db_conn is not None and premise_exists(db_conn, page.key):
+            if page is None or _used(db_conn, cfg, page.key):
                 continue
             candidates.append(page)
         if candidates:
@@ -548,7 +692,7 @@ def generate_terraria_script(cfg, db_conn, title: Optional[str] = None) -> Scrip
         if page is None:
             raise RuntimeError(f"Terraria wiki article {title!r} is missing or too thin to use")
     else:
-        page = pick_page(db_conn)
+        page = pick_page(db_conn, cfg)
 
     client = load_client(cfg)
     lo, hi = _word_band(cfg)
@@ -559,11 +703,14 @@ def generate_terraria_script(cfg, db_conn, title: Optional[str] = None) -> Scrip
     # The beat count is what the model actually honours; asked for a word
     # total alone, the first real script came back at 243 words against a
     # 300-540 target on all three calls.
-    angle, hook = _weighted(ANGLES), _weighted(HOOKS)
+    angles, hooks = _learned_weights(cfg, db_conn)
+    angle, hook = _weighted(angles), _weighted(hooks)
     logger.info("Terraria angle: %r | hook: %r", angle, hook[:60])
     prompt = PROMPT.format(title=page.title, text=page.text, images=images, angle=angle, hook=hook,
                            words_lo=lo, words_hi=hi,
                            beats_lo=round(lo / WORDS_PER_BEAT), beats_hi=round(hi / WORDS_PER_BEAT))
+    if cfg.terraria.prompt_notes.strip():
+        prompt += "\n\n" + cfg.terraria.prompt_notes.strip()
 
     note = ""
     for call in range(1, MAX_LLM_CALLS + 1):
@@ -587,7 +734,8 @@ def generate_terraria_script(cfg, db_conn, title: Optional[str] = None) -> Scrip
 
         logger.info("Terraria script accepted: %r (%d beats, %d words, %d call(s))",
                     page.title, len(script.beats), words, call)
-        return _verify(client, page, script)
+        script = _verify(client, page, script)
+        return script.model_copy(update={"angle": angle, "hook_style": hook})
 
     raise RuntimeError(
         f"Gave up on {page.title!r} after {MAX_LLM_CALLS} LLM calls. Not retrying further: "
